@@ -19,13 +19,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=3)
     parser.add_argument("--delay", type=float, default=0.4)
     parser.add_argument("--output", default="output/appointment_crawl.json")
+    parser.add_argument(
+        "--due-only",
+        action="store_true",
+        help="Only crawl sites whose refresh interval has elapsed",
+    )
+    parser.add_argument(
+        "--level",
+        default=None,
+        help="Optional filter: headquarters / province / city / district",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = parse_args()
-    result = crawl_appointments(args.site, limit=args.limit, delay=args.delay)
+    result = crawl_appointments(
+        args.site,
+        limit=args.limit,
+        delay=args.delay,
+        due_only=args.due_only,
+        level=args.level,
+    )
     out = dump_json(args.output, appointments_payload(result))
     logging.info("Wrote %s", out)
 

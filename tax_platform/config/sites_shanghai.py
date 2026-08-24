@@ -5,21 +5,24 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class BureauSite:
-    """One tax bureau data source (city or district)."""
+    """One tax bureau data source (any hierarchy level)."""
 
     code: str
     name: str
-    level: str  # city | district
+    # headquarters | province | city | district
+    # 直辖市税务局按 province 计频（约一个月）
+    level: str
     parent_code: str | None
     home_url: str
     appointment_list_url: str
     leader_intro_url: str
+    refresh_days: int | None = None  # override schedule default when set
 
 
 SHANGHAI_CITY = BureauSite(
     code="shanghai",
     name="国家税务总局上海市税务局",
-    level="city",
+    level="province",
     parent_code=None,
     home_url="https://shanghai.chinatax.gov.cn/",
     # 市局公开栏目用「人事信息」聚合页，内含任免列表

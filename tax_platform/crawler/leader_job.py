@@ -6,11 +6,14 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from tax_platform.config.sites_shanghai import get_site
+from tax_platform.config.sites import get_site
+from tax_platform.crawler.crawl_state import load_crawl_state, mark_crawl_result, save_crawl_state
 from tax_platform.crawler.http_client import create_session, fetch_html
 from tax_platform.crawler.job_io import resolve_site_codes, serialize_crawl_result
 from tax_platform.crawler.leader_intro import leader_page_targets, parse_leader_intro
 from tax_platform.models.entities import LeaderDuty
+
+KIND = "leaders"
 
 
 @dataclass
@@ -65,10 +68,31 @@ def crawl_leaders(
     site: str = "pdtax",
     *,
     delay: float = 0.4,
+    due_only: bool = False,
+    level: str | None = None,
+    record_state: bool = True,
 ) -> LeaderCrawlResult | list[LeaderCrawlResult]:
-    codes = resolve_site_codes(site)
-    results = [crawl_leaders_site(code, delay=delay) for code in codes]
-    if site == "all":
+    codes = resolve_site_codes(site, kind=KIND, due_only=due_only, level=level)
+    if not codes:
+        logging.info("No leader sites due for crawl")
+        return [] if site == "all" or due_only else []
+
+    results: list[LeaderCrawlResult] = []
+    state = load_crawl_state() if record_state else {}
+    for code in codes:
+        result = crawl_leaders_site(code, delay=delay)
+        results.append(result)
+        if record_state:
+            mark_crawl_result(
+                state,
+                kind=KIND,
+                site_code=code,
+                ok=not result.failed or bool(result.leaders),
+            )
+    if record_state:
+        save_crawl_state(state)
+
+    if site == "all" or due_only or len(results) != 1:
         return results
     return results[0]
 

@@ -6,13 +6,16 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from tax_platform.config.sites_shanghai import get_site
+from tax_platform.config.sites import get_site
 from tax_platform.crawler.appointment_clauses import extract_appointment_events
 from tax_platform.crawler.appointment_detail import parse_appointment_detail
 from tax_platform.crawler.appointment_list import parse_appointment_list
+from tax_platform.crawler.crawl_state import load_crawl_state, mark_crawl_result, save_crawl_state
 from tax_platform.crawler.http_client import create_session, fetch_html
 from tax_platform.crawler.job_io import resolve_site_codes, serialize_crawl_result
 from tax_platform.models.entities import AppointmentEvent, NoticeMeta
+
+KIND = "appointments"
 
 
 @dataclass
@@ -65,10 +68,31 @@ def crawl_appointments(
     *,
     limit: int = 3,
     delay: float = 0.4,
+    due_only: bool = False,
+    level: str | None = None,
+    record_state: bool = True,
 ) -> AppointmentCrawlResult | list[AppointmentCrawlResult]:
-    codes = resolve_site_codes(site)
-    results = [crawl_appointments_site(code, limit=limit, delay=delay) for code in codes]
-    if site == "all":
+    codes = resolve_site_codes(site, kind=KIND, due_only=due_only, level=level)
+    if not codes:
+        logging.info("No appointment sites due for crawl")
+        return [] if site == "all" or due_only else []
+
+    results: list[AppointmentCrawlResult] = []
+    state = load_crawl_state() if record_state else {}
+    for code in codes:
+        result = crawl_appointments_site(code, limit=limit, delay=delay)
+        results.append(result)
+        if record_state:
+            mark_crawl_result(
+                state,
+                kind=KIND,
+                site_code=code,
+                ok=not result.failed or bool(result.notices),
+            )
+    if record_state:
+        save_crawl_state(state)
+
+    if site == "all" or due_only or len(results) != 1:
         return results
     return results[0]
 

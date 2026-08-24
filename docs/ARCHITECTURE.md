@@ -46,10 +46,28 @@ appointment_*.py         任免列表、详情、条款解析
 leader_intro.py          领导介绍解析
 appointment_job.py       任免抓取编排（按站点）
 leader_job.py            领导介绍抓取编排（按站点）
+crawl_state.py           上次成功时间与到期判断
 job_io.py                站点选择、JSON 落盘
 ```
 
 业务代码应调用 `crawl_appointments` / `crawl_leaders`，不要把抓取逻辑写在 `scripts/` 里。
+
+## 覆盖范围（当前 vs 目标）
+
+| 层级 | 更新频率 | 当前状态 |
+| --- | --- | --- |
+| 总局 headquarters | 90 天 | 未入库（页面结构与地方局不同，需单独适配） |
+| 省局 / 直辖市局 province | 30 天 | 仅上海 |
+| 地市局 city | 14 天 | 未入库 |
+| 区县局 district | 7 天 | 仅上海 16 区 |
+
+全国领导不是一次 `--site all` 就能抓全的：要先按省扩站点清单，再按站点模板适配解析。到期调度已按上表层级生效。
+
+```powershell
+python scripts/crawl_due.py --kind leaders
+python scripts/crawl_leaders.py --site all --due-only
+python scripts/crawl_appointments.py --site all --due-only --level district
+```
 
 ## 公开页怎么排
 

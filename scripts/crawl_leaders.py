@@ -18,13 +18,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--site", default="pdtax", help="Bureau code, e.g. pdtax / shanghai / all")
     parser.add_argument("--delay", type=float, default=0.4)
     parser.add_argument("--output", default="output/leader_crawl.json")
+    parser.add_argument(
+        "--due-only",
+        action="store_true",
+        help="Only crawl sites whose refresh interval has elapsed",
+    )
+    parser.add_argument(
+        "--level",
+        default=None,
+        help="Optional filter: headquarters / province / city / district",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = parse_args()
-    result = crawl_leaders(args.site, delay=args.delay)
+    result = crawl_leaders(
+        args.site,
+        delay=args.delay,
+        due_only=args.due_only,
+        level=args.level,
+    )
     out = dump_json(args.output, leaders_payload(result))
     logging.info("Wrote %s", out)
 

@@ -7,6 +7,11 @@ from tax_platform.crawler.appointment_job import (
     crawl_appointments_site,
 )
 from tax_platform.crawler.appointment_list import parse_appointment_list
+from tax_platform.crawler.crawl_state import (
+    is_site_due,
+    load_crawl_state,
+    sites_due_for_crawl,
+)
 from tax_platform.crawler.http_client import (
     create_session,
     ensure_trailing_slash,
@@ -37,11 +42,14 @@ __all__ = [
     "extract_appointment_events",
     "extract_meta_refresh_url",
     "fetch_html",
+    "is_site_due",
     "leader_page_targets",
     "leaders_payload",
+    "load_crawl_state",
     "parse_appointment_detail",
     "parse_appointment_list",
     "parse_leader_intro",
     "resolve_list_child_url",
     "resolve_site_codes",
+    "sites_due_for_crawl",
 ]

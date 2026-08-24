@@ -22,6 +22,8 @@ from tax_platform.crawler.http_client import (
 def main() -> None:
     assert len(SHANGHAI_SITES) == 17
     assert len(list_sites("district")) == 16
+    assert len(list_sites("province")) == 1
+    assert SHANGHAI_SITES[0].code == "shanghai"
 
     list_url = "https://shanghai.chinatax.gov.cn/pdtax/xxgk/rsrm"
     child = resolve_list_child_url(list_url, "./202606/t480619.html")

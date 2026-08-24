@@ -17,9 +17,14 @@ python scripts/smoke_foundation.py
 python tests/test_appointment_parsers.py
 python tests/test_leader_intro.py
 python tests/test_crawl_jobs.py
+python tests/test_schedule.py
+python scripts/crawl_due.py --kind leaders
 python scripts/crawl_appointments.py --site pdtax --limit 3
 python scripts/crawl_leaders.py --site pdtax
+python scripts/crawl_leaders.py --site all --due-only
 ```
+
+当前站点清单只有上海（直辖市局 + 16 区）。总局/各省/地市要后续按省扩 `config/sites_*.py`。更新频率：总局 90 天、省 30 天、市 14 天、区 7 天。
 
 ## 目录
 
