@@ -8,14 +8,16 @@
 
 - [x] PR1：平台骨架、上海数据源清单、实体契约、HTTP/URL 工具
 - [x] PR2：人事任免列表 / 详情 / 条款抽取
-- [ ] PR3：领导介绍解析
+- [x] PR3：领导介绍解析
 
 ## 检查
 
 ```powershell
 python scripts/smoke_foundation.py
 python tests/test_appointment_parsers.py
+python tests/test_leader_intro.py
 python scripts/crawl_appointments.py --site pdtax --limit 3
+python scripts/crawl_leaders.py --site pdtax
 ```
 
 ## 目录

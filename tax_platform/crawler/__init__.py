@@ -8,6 +8,7 @@ from tax_platform.crawler.http_client import (
     fetch_html,
     resolve_list_child_url,
 )
+from tax_platform.crawler.leader_intro import leader_page_targets, parse_leader_intro
 
 __all__ = [
     "create_session",
@@ -15,7 +16,9 @@ __all__ = [
     "extract_appointment_events",
     "extract_meta_refresh_url",
     "fetch_html",
+    "leader_page_targets",
     "parse_appointment_detail",
     "parse_appointment_list",
+    "parse_leader_intro",
     "resolve_list_child_url",
 ]
