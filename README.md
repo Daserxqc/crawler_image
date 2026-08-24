@@ -16,6 +16,7 @@
 python scripts/smoke_foundation.py
 python tests/test_appointment_parsers.py
 python tests/test_leader_intro.py
+python tests/test_crawl_jobs.py
 python scripts/crawl_appointments.py --site pdtax --limit 3
 python scripts/crawl_leaders.py --site pdtax
 ```
@@ -26,11 +27,16 @@ python scripts/crawl_leaders.py --site pdtax
 tax_platform/
   config/          数据源清单
   models/          实体契约
-  crawler/         抓取与解析
+  crawler/         HTTP、解析、按站点 crawl job
   accounts/        登录与关注（预留，后做）
+scripts/           薄 CLI（调 job，写 output/）
 docs/
   ARCHITECTURE.md
   TASK_BREAKDOWN.md
 ```
 
-爬取结果默认写入 `output/`（已 gitignore）。
+爬取结果默认写入 `output/`（已 gitignore）。程序内请用：
+
+```python
+from tax_platform.crawler import crawl_appointments, crawl_leaders
+```

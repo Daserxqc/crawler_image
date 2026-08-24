@@ -29,13 +29,27 @@
 tax_platform/
   config/          数据源清单
   models/          实体契约
-  crawler/         抓取与解析（任免 / 领导介绍分文件）
+  crawler/         抓取：HTTP、页面解析、按站点 crawl job
   normalize/       职务、科室归一（后续）
   store/           SQLite（后续）
   search/          组合筛选（后续）
   web/             公开页（后续）
   accounts/        登录与关注（预留）
+scripts/           薄 CLI，只调 crawler job 并写 output/
 ```
+
+`crawler/` 内部分层：
+
+```
+http_client.py           请求 / URL / META REFRESH
+appointment_*.py         任免列表、详情、条款解析
+leader_intro.py          领导介绍解析
+appointment_job.py       任免抓取编排（按站点）
+leader_job.py            领导介绍抓取编排（按站点）
+job_io.py                站点选择、JSON 落盘
+```
+
+业务代码应调用 `crawl_appointments` / `crawl_leaders`，不要把抓取逻辑写在 `scripts/` 里。
 
 ## 公开页怎么排
 
