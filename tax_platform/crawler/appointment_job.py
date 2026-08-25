@@ -13,6 +13,8 @@ from tax_platform.crawler.appointment_list import parse_appointment_list
 from tax_platform.crawler.crawl_state import load_crawl_state, mark_crawl_result, save_crawl_state
 from tax_platform.crawler.http_client import create_session, fetch_html
 from tax_platform.crawler.job_io import resolve_site_codes, serialize_crawl_result
+from tax_platform.crawler.jpage import fetch_dataproxy_html, find_dataproxy_url, materialize_list_html
+from tax_platform.crawler.xxgk_list import fetch_xxgk_list_html
 from tax_platform.models.entities import AppointmentEvent, NoticeMeta
 
 KIND = "appointments"
@@ -28,11 +30,31 @@ class AppointmentCrawlResult:
     failed: list[dict[str, str]] = field(default_factory=list)
 
 
-def crawl_appointments_site(code: str, *, limit: int = 3, delay: float = 0.4) -> AppointmentCrawlResult:
+def _load_appointment_list_html(session, list_url: str) -> tuple[str, str]:
+    final_url, html = fetch_html(session, list_url, follow_meta_refresh=False)
+    items_html = materialize_list_html(html)
+    if parse_appointment_list(items_html, final_url):
+        return final_url, items_html
+
+    xxgk_html = fetch_xxgk_list_html(session, final_url, html)
+    if xxgk_html and parse_appointment_list(xxgk_html, final_url):
+        return final_url, xxgk_html
+
+    proxy = find_dataproxy_url(html, final_url)
+    if not proxy:
+        return final_url, items_html
+    proxy_html = fetch_dataproxy_html(session, proxy, referer=final_url)
+    return final_url, materialize_list_html(proxy_html)
+
+
+def crawl_appointments_site(code: str, *, limit: int = 0, delay: float = 0.4) -> AppointmentCrawlResult:
+    """limit=0 means no cap (crawl every appointment link found on the list page)."""
     site = get_site(code)
     session = create_session()
-    list_url, list_html = fetch_html(session, site.appointment_list_url, follow_meta_refresh=False)
-    items = parse_appointment_list(list_html, list_url)[:limit]
+    list_url, list_html = _load_appointment_list_html(session, site.appointment_list_url)
+    items = parse_appointment_list(list_html, list_url)
+    if limit > 0:
+        items = items[:limit]
     notices: list[NoticeMeta] = []
     events: list[AppointmentEvent] = []
     failed: list[dict[str, str]] = []
@@ -66,7 +88,7 @@ def crawl_appointments_site(code: str, *, limit: int = 3, delay: float = 0.4) ->
 def crawl_appointments(
     site: str = "pdtax",
     *,
-    limit: int = 3,
+    limit: int = 0,
     delay: float = 0.4,
     due_only: bool = False,
     level: str | None = None,
@@ -75,13 +97,29 @@ def crawl_appointments(
     codes = resolve_site_codes(site, kind=KIND, due_only=due_only, level=level)
     if not codes:
         logging.info("No appointment sites due for crawl")
-        return [] if site == "all" or due_only else []
+        return [] if site in {"all", "national"} or due_only else []
 
     results: list[AppointmentCrawlResult] = []
     state = load_crawl_state() if record_state else {}
     for code in codes:
-        result = crawl_appointments_site(code, limit=limit, delay=delay)
+        try:
+            result = crawl_appointments_site(code, limit=limit, delay=delay)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Site %s failed: %s", code, exc)
+            result = AppointmentCrawlResult(
+                bureau=code,
+                list_url=get_site(code).appointment_list_url,
+                list_count=0,
+                failed=[{"url": get_site(code).appointment_list_url, "error": str(exc)}],
+            )
         results.append(result)
+        logging.info(
+            "appointments %s: %s notices, %s events, %s failed",
+            code,
+            len(result.notices),
+            len(result.events),
+            len(result.failed),
+        )
         if record_state:
             mark_crawl_result(
                 state,
@@ -92,7 +130,7 @@ def crawl_appointments(
     if record_state:
         save_crawl_state(state)
 
-    if site == "all" or due_only or len(results) != 1:
+    if site in {"all", "national"} or due_only or len(results) != 1:
         return results
     return results[0]
 

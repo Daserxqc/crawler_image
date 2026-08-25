@@ -13,6 +13,8 @@ from tax_platform.crawler.http_client import resolve_list_child_url
 DATE_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
 SKIP_TITLE_KEYWORDS = ("招录", "招聘", "体检", "公示", "面试", "成绩")
 KEEP_TITLE_KEYWORDS = ("任免", "任职", "免去", "免职")
+# Nav crumbs that match KEEP_TITLE_KEYWORDS but are not notice titles
+SKIP_EXACT_TITLES = {"人事任免", "人事信息", "任免", "任职信息"}
 
 
 @dataclass(frozen=True)
@@ -32,26 +34,60 @@ def parse_appointment_list(html: str, list_url: str) -> list[AppointmentListItem
         href = anchor.get("href") or ""
         if not title or not href or href.startswith("javascript:"):
             continue
-        if not _is_appointment_title(title):
+        if not _is_appointment_title(title, href):
             continue
         source_url = resolve_list_child_url(list_url, href)
+        if _is_list_page_url(source_url, list_url):
+            continue
         if source_url in seen:
             continue
         seen.add(source_url)
+        published = _extract_date(title, anchor.parent.get_text(" ", strip=True) if anchor.parent else title)
+        # Hubei-style date-only anchors: synthesize a usable title AFTER date strip.
+        display_title = _strip_trailing_date(title)
+        if DATE_RE.fullmatch(title.strip()):
+            display_title = f"人事任免（{published.isoformat()}）" if published else "人事任免"
         items.append(
             AppointmentListItem(
-                title=_strip_trailing_date(title),
+                title=display_title,
                 source_url=source_url,
-                published_on=_extract_date(title, anchor.parent.get_text(" ", strip=True) if anchor.parent else title),
+                published_on=published,
             )
         )
     return items
 
 
-def _is_appointment_title(title: str) -> bool:
+def _is_appointment_title(title: str, href: str = "") -> bool:
+    if title.strip() in SKIP_EXACT_TITLES:
+        return False
     if any(keyword in title for keyword in SKIP_TITLE_KEYWORDS):
         return False
-    return any(keyword in title for keyword in KEEP_TITLE_KEYWORDS)
+    if any(keyword in title for keyword in KEEP_TITLE_KEYWORDS):
+        return True
+    # Hubei (and similar): list rows show only the date; href points at notice body.
+    if DATE_RE.fullmatch(title.strip()) and re.search(
+        r"/(?:rsrm|rsxx|rsgl)(?:/|$).*\.(?:s?html?|htm)", href, re.I
+    ):
+        return True
+    if DATE_RE.fullmatch(title.strip()) and re.search(r"/\d{5,}\.htm", href, re.I):
+        return True
+    return False
+
+
+def _is_list_page_url(source_url: str, list_url: str) -> bool:
+    if _url_key(source_url) == _url_key(list_url):
+        return True
+    normalized = source_url.rstrip("/")
+    # e.g. .../rsrm without trailing article segment
+    return normalized.endswith("/rsrm") or normalized.endswith("/rsxx")
+
+
+def _url_key(url: str) -> str:
+    """Host + path, ignoring http/https differences common in saved HTML."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    return f"{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
 
 
 def _strip_trailing_date(title: str) -> str:

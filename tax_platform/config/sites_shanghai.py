@@ -1,35 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class BureauSite:
-    """One tax bureau data source (any hierarchy level)."""
-
-    code: str
-    name: str
-    # headquarters | province | city | district
-    # 直辖市税务局按 province 计频（约一个月）
-    level: str
-    parent_code: str | None
-    home_url: str
-    appointment_list_url: str
-    leader_intro_url: str
-    refresh_days: int | None = None  # override schedule default when set
-
+from tax_platform.config.bureau_site import BureauSite
 
 SHANGHAI_CITY = BureauSite(
     code="shanghai",
     name="国家税务总局上海市税务局",
     level="province",
-    parent_code=None,
+    parent_code="sta",
     home_url="https://shanghai.chinatax.gov.cn/",
-    # 市局公开栏目用「人事信息」聚合页，内含任免列表
     appointment_list_url="https://shanghai.chinatax.gov.cn/xxgk/rsxx/",
     leader_intro_url="https://shanghai.chinatax.gov.cn/xxgk/ldjj/",
+    region="上海市",
 )
-
 
 _DISTRICTS: list[tuple[str, str, str]] = [
     ("pdtax", "浦东新区税务局", "pdtax"),
@@ -61,6 +43,7 @@ def _district_site(code: str, short_name: str, path: str) -> BureauSite:
         home_url=f"{base}/",
         appointment_list_url=f"{base}/xxgk/rsrm/",
         leader_intro_url=f"{base}/xxgk/ldjj/",
+        region="上海市",
     )
 
 
@@ -68,16 +51,3 @@ SHANGHAI_SITES: list[BureauSite] = [
     SHANGHAI_CITY,
     *[_district_site(code, name, path) for code, name, path in _DISTRICTS],
 ]
-
-
-def get_site(code: str) -> BureauSite:
-    for site in SHANGHAI_SITES:
-        if site.code == code:
-            return site
-    raise KeyError(f"Unknown bureau site code: {code}")
-
-
-def list_sites(level: str | None = None) -> list[BureauSite]:
-    if level is None:
-        return list(SHANGHAI_SITES)
-    return [site for site in SHANGHAI_SITES if site.level == level]

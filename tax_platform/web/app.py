@@ -1,0 +1,496 @@
+"""Public search HTTP API (PR7–PR9)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import quote
+
+from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.responses import Response
+
+from tax_platform.config.sites import list_sites
+from tax_platform.search.changes import list_changes, post_archive
+from tax_platform.search.export import rows_from_profile, rows_from_search_hits, to_csv_bytes, to_xlsx_bytes
+from tax_platform.search.query import (
+    departments_for_leader,
+    leaders_for_department,
+    lookup_department,
+    penetrate_department,
+    search_people,
+    suggest_departments,
+    suggest_titles,
+)
+from tax_platform.store.anomalies import (
+    apply_correction,
+    ignore_anomaly,
+    list_anomalies,
+    list_corrections,
+    scan_anomalies,
+)
+from tax_platform.store.ingest import get_person_profile
+from tax_platform.store.schema import DEFAULT_DB_PATH, connect
+
+app = FastAPI(
+    title="税局人事检索 API",
+    version="0.9.1",
+    description="PR6–PR9：异常修正 / 检索 / 穿透 / 履历 / 变动流 / 岗位档案 / 导出",
+)
+
+# Overridable in tests.
+DB_PATH: Path = Path(DEFAULT_DB_PATH)
+
+
+def _db_path() -> Path:
+    return Path(DB_PATH)
+
+
+def _slim_hit(hit: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": hit["id"],
+        "name": hit["name"],
+        "bureau_code": hit["bureau_code"],
+        "org_level": hit["org_level"],
+        "roles": hit.get("roles") or [],
+        "match_reasons": hit.get("match_reasons") or [],
+        "supervised_departments": hit.get("supervised_departments") or [],
+        "current": hit.get("current"),
+        "appointment_count": hit.get("appointment_count") or 0,
+        "appointments": [
+            {
+                "action": ev.get("action"),
+                "title_raw": ev.get("title_raw"),
+                "department_raw": ev.get("department_raw"),
+                "bureau_name": ev.get("bureau_name"),
+                "effective_on": ev.get("effective_on"),
+                "notice_title": ev.get("notice_title"),
+                "source_url": ev.get("source_url"),
+            }
+            for ev in (hit.get("appointments") or [])
+        ],
+    }
+
+
+@app.get("/api/health")
+def health() -> dict[str, Any]:
+    path = _db_path()
+    return {"ok": True, "db": str(path), "db_exists": path.exists()}
+
+
+@app.get("/api/meta/levels")
+def meta_levels() -> dict[str, Any]:
+    return {
+        "levels": [
+            {"id": "headquarters", "label": "总局"},
+            {"id": "province", "label": "省局"},
+            {"id": "city", "label": "市局"},
+            {"id": "district", "label": "区县局"},
+        ]
+    }
+
+
+@app.get("/api/meta/bureaus")
+def meta_bureaus(
+    level: str | None = Query(None, description="headquarters|province|city|district"),
+) -> dict[str, Any]:
+    sites = list_sites(level)
+    return {
+        "items": [
+            {
+                "code": s.code,
+                "name": s.name,
+                "region": s.region,
+                "level": s.level,
+                "parent_code": s.parent_code,
+            }
+            for s in sites
+        ]
+    }
+
+
+@app.get("/api/departments/suggest")
+def api_suggest_departments(
+    q: str = Query("", description="科室关键词"),
+    level: str | None = Query(None, alias="org_level"),
+    limit: int = Query(30, ge=1, le=200),
+) -> dict[str, Any]:
+    """层级-科室联动下拉数据。"""
+    conn = connect(_db_path())
+    try:
+        items = suggest_departments(q, org_level=level, limit=limit, conn=conn)
+    finally:
+        conn.close()
+    return {"items": items}
+
+
+@app.get("/api/titles/suggest")
+def api_suggest_titles(
+    q: str = Query(""),
+    level: str | None = Query(None, alias="org_level"),
+    limit: int = Query(30, ge=1, le=200),
+) -> dict[str, Any]:
+    conn = connect(_db_path())
+    try:
+        items = suggest_titles(q, org_level=level, limit=limit, conn=conn)
+    finally:
+        conn.close()
+    return {"items": items}
+
+
+@app.get("/api/search")
+def api_search(
+    title: str | None = None,
+    department: str | None = None,
+    name: str | None = None,
+    level: str | None = Query(None, alias="org_level"),
+    bureau: str | None = Query(None, alias="bureau_code"),
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+) -> dict[str, Any]:
+    """多维组合筛选：层级 / 科室 / 职务 / 姓名 / 时间。"""
+    if not any([(title or "").strip(), (department or "").strip(), (name or "").strip()]):
+        raise HTTPException(status_code=400, detail="需要 title / department / name 至少一个")
+    conn = connect(_db_path())
+    try:
+        hits = search_people(
+            title=title,
+            department=department,
+            name=name,
+            org_level=level,
+            bureau_code=bureau,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            conn=conn,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
+    return {"total": len(hits), "items": [_slim_hit(h) for h in hits]}
+
+
+@app.get("/api/departments/lookup")
+def api_department_lookup(
+    department: str = Query(..., min_length=1),
+    level: str | None = Query(None, alias="org_level"),
+    bureau: str | None = Query(None, alias="bureau_code"),
+    staff_limit: int = Query(30, ge=0, le=200),
+) -> dict[str, Any]:
+    """科室 → 分管领导 + 任职人员。"""
+    conn = connect(_db_path())
+    try:
+        result = lookup_department(
+            department,
+            org_level=level,
+            bureau_code=bureau,
+            staff_limit=staff_limit,
+            conn=conn,
+        )
+    finally:
+        conn.close()
+    result["staff"] = [_slim_hit(s) for s in result.get("staff") or []]
+    return result
+
+
+@app.get("/api/departments/penetrate")
+def api_department_penetrate(
+    department: str = Query(..., min_length=1),
+    level: str | None = Query(None, alias="org_level"),
+    bureau: str | None = Query(None, alias="bureau_code"),
+) -> dict[str, Any]:
+    """层级穿透：科室 → 分管领导 → 单位层级。"""
+    conn = connect(_db_path())
+    try:
+        result = penetrate_department(
+            department,
+            org_level=level,
+            bureau_code=bureau,
+            conn=conn,
+        )
+    finally:
+        conn.close()
+    result["staff"] = [_slim_hit(s) for s in result.get("staff") or []]
+    return result
+
+
+@app.get("/api/departments/{department}/leaders")
+def api_department_leaders(
+    department: str,
+    level: str | None = Query(None, alias="org_level"),
+    bureau: str | None = Query(None, alias="bureau_code"),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    conn = connect(_db_path())
+    try:
+        items = leaders_for_department(
+            department,
+            org_level=level,
+            bureau_code=bureau,
+            limit=limit,
+            conn=conn,
+        )
+    finally:
+        conn.close()
+    return {"department": department, "items": items}
+
+
+@app.get("/api/leaders/{name}/departments")
+def api_leader_departments(
+    name: str,
+    bureau: str | None = Query(None, alias="bureau_code"),
+) -> dict[str, Any]:
+    conn = connect(_db_path())
+    try:
+        items = departments_for_leader(name, bureau_code=bureau, conn=conn)
+    finally:
+        conn.close()
+    return {"name": name, "items": items}
+
+
+@app.get("/api/people/{person_id:path}")
+def api_person_profile(person_id: str) -> dict[str, Any]:
+    """履历倒序 + 公告溯源链接。person_id 形如 shanghai:刘洪波"""
+    conn = connect(_db_path())
+    try:
+        profile = get_person_profile(person_id, conn=conn)
+    finally:
+        conn.close()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="person not found")
+    # Ensure history is reverse-chronological (already ordered in store).
+    return profile
+
+
+@app.get("/api/export/search")
+def api_export_search(
+    title: str | None = None,
+    department: str | None = None,
+    name: str | None = None,
+    level: str | None = Query(None, alias="org_level"),
+    bureau: str | None = Query(None, alias="bureau_code"),
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = Query(200, ge=1, le=2000),
+    fmt: Literal["csv", "xlsx"] = Query("csv"),
+) -> Response:
+    if not any([(title or "").strip(), (department or "").strip(), (name or "").strip()]):
+        raise HTTPException(status_code=400, detail="需要 title / department / name 至少一个")
+    conn = connect(_db_path())
+    try:
+        hits = search_people(
+            title=title,
+            department=department,
+            name=name,
+            org_level=level,
+            bureau_code=bureau,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            conn=conn,
+        )
+    finally:
+        conn.close()
+    data_rows = rows_from_search_hits(hits)
+    filename = "search_export"
+    if fmt == "xlsx":
+        try:
+            payload = to_xlsx_bytes(data_rows)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"{filename}.xlsx"
+    else:
+        payload = to_csv_bytes(data_rows)
+        media = "text/csv; charset=utf-8"
+        filename = f"{filename}.csv"
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+    }
+    return Response(content=payload, media_type=media, headers=headers)
+
+
+@app.get("/api/export/people/{person_id:path}")
+def api_export_person(
+    person_id: str,
+    fmt: Literal["csv", "xlsx"] = Query("csv"),
+) -> Response:
+    conn = connect(_db_path())
+    try:
+        profile = get_person_profile(person_id, conn=conn)
+    finally:
+        conn.close()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="person not found")
+    data_rows = rows_from_profile(profile)
+    safe_name = profile.get("name") or "person"
+    if fmt == "xlsx":
+        try:
+            payload = to_xlsx_bytes(data_rows)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"{safe_name}_履历.xlsx"
+    else:
+        payload = to_csv_bytes(data_rows)
+        media = "text/csv; charset=utf-8"
+        filename = f"{safe_name}_履历.csv"
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+    }
+    return Response(content=payload, media_type=media, headers=headers)
+
+
+@app.get("/api/changes")
+def api_changes(
+    level: str | None = Query(None, alias="org_level"),
+    bureau: str | None = Query(None, alias="bureau_code"),
+    change_type: str | None = Query(
+        None,
+        description="appoint|dismiss|transfer|promote|retire|probation_confirm|unknown",
+    ),
+    department: str | None = None,
+    name: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """全站变动动态流。"""
+    conn = connect(_db_path())
+    try:
+        return list_changes(
+            org_level=level,
+            bureau_code=bureau,
+            change_type=change_type,
+            department=department,
+            name=name,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            offset=offset,
+            conn=conn,
+        )
+    finally:
+        conn.close()
+
+
+@app.get("/api/posts")
+def api_posts(
+    bureau: str = Query(..., alias="bureau_code"),
+    department: str = Query(..., min_length=1),
+    title: str | None = None,
+) -> dict[str, Any]:
+    """岗位现任 / 历任档案。"""
+    conn = connect(_db_path())
+    try:
+        return post_archive(
+            bureau_code=bureau,
+            department=department,
+            title=title,
+            conn=conn,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+
+@app.post("/api/anomalies/scan")
+def api_anomalies_scan() -> dict[str, Any]:
+    """扫描并刷新异常表。"""
+    conn = connect(_db_path())
+    try:
+        return scan_anomalies(conn=conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/anomalies")
+def api_anomalies_list(
+    status: str = Query("open", description="open|resolved|ignored|all"),
+    kind: str | None = None,
+    bureau: str | None = Query(None, alias="bureau_code"),
+    severity: str | None = None,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    conn = connect(_db_path())
+    try:
+        return list_anomalies(
+            status=status,
+            kind=kind,
+            bureau_code=bureau,
+            severity=severity,
+            limit=limit,
+            offset=offset,
+            conn=conn,
+        )
+    finally:
+        conn.close()
+
+
+@app.post("/api/anomalies/{anomaly_id}/ignore")
+def api_anomaly_ignore(
+    anomaly_id: int,
+    payload: dict[str, Any] | None = Body(default=None),
+) -> dict[str, Any]:
+    note = (payload or {}).get("note")
+    conn = connect(_db_path())
+    try:
+        return ignore_anomaly(anomaly_id, note=note, conn=conn)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+
+@app.post("/api/corrections")
+def api_corrections_apply(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """人工修正回写。
+
+    Body 示例::
+        {
+          "target_type": "appointment_event",
+          "target_id": "123",
+          "patch": {"person_name": "陈双格", "department_raw": "政策法规处"},
+          "note": "修正命陈双格",
+          "anomaly_id": 10
+        }
+    删除脏记录::
+        {"target_type": "appointment_event", "target_id": "123", "delete": true, "note": "噪声"}
+    """
+    conn = connect(_db_path())
+    try:
+        return apply_correction(
+            target_type=payload.get("target_type") or "",
+            target_id=str(payload.get("target_id") or ""),
+            patch=payload.get("patch") or {},
+            note=payload.get("note"),
+            anomaly_id=payload.get("anomaly_id"),
+            delete=bool(payload.get("delete")),
+            conn=conn,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+
+@app.get("/api/corrections")
+def api_corrections_list(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    conn = connect(_db_path())
+    try:
+        return list_corrections(limit=limit, offset=offset, conn=conn)
+    finally:
+        conn.close()
+
+
+def create_app() -> FastAPI:
+    return app

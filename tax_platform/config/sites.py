@@ -1,14 +1,17 @@
-"""Unified bureau site registry.
-
-Today: Shanghai only. Later append other province catalogs here until
-headquarters → province → city → district coverage is complete.
-"""
+"""Unified bureau site registry: headquarters → provinces → cities/districts."""
 
 from __future__ import annotations
 
-from tax_platform.config.sites_shanghai import BureauSite, SHANGHAI_SITES
+from tax_platform.config.bureau_site import BureauSite
+from tax_platform.config.sites_headquarters import STA_HEADQUARTERS
+from tax_platform.config.sites_provinces import PROVINCE_SITES
+from tax_platform.config.sites_shanghai import SHANGHAI_SITES
 
-ALL_SITES: list[BureauSite] = list(SHANGHAI_SITES)
+ALL_SITES: list[BureauSite] = [
+    STA_HEADQUARTERS,
+    *PROVINCE_SITES,
+    *SHANGHAI_SITES,
+]
 
 
 def get_site(code: str) -> BureauSite:
@@ -18,7 +21,10 @@ def get_site(code: str) -> BureauSite:
     raise KeyError(f"Unknown bureau site code: {code}")
 
 
-def list_sites(level: str | None = None) -> list[BureauSite]:
-    if level is None:
-        return list(ALL_SITES)
-    return [site for site in ALL_SITES if site.level == level]
+def list_sites(level: str | None = None, region: str | None = None) -> list[BureauSite]:
+    sites = ALL_SITES
+    if level is not None:
+        sites = [site for site in sites if site.level == level]
+    if region is not None:
+        sites = [site for site in sites if site.region == region]
+    return list(sites)

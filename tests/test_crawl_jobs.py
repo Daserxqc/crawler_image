@@ -19,7 +19,9 @@ class CrawlJobHelperTests(unittest.TestCase):
         codes = resolve_site_codes("all")
         self.assertIn("shanghai", codes)
         self.assertIn("pdtax", codes)
-        self.assertEqual(len(codes), 17)
+        self.assertIn("sta", codes)
+        self.assertIn("guangdong", codes)
+        self.assertEqual(len(codes), 48)
 
     def test_appointments_payload_keeps_failed_rows(self) -> None:
         result = AppointmentCrawlResult(

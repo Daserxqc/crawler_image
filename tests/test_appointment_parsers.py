@@ -62,6 +62,62 @@ class AppointmentClauseTests(unittest.TestCase):
         self.assertEqual(gong.action, "dismiss")
         self.assertEqual(gong.title_raw, "副所长")
 
+    def test_hebei_appoint_as_clauses(self) -> None:
+        from tax_platform.models.entities import NoticeMeta
+
+        notice = NoticeMeta(
+            bureau_code="hebei",
+            title="国家税务总局河北省税务局任免工作人员（2024年12月3日）",
+            source_url="http://hebei.chinatax.gov.cn/example.html",
+            raw_text=(
+                "国家税务总局河北省税务局决定，任命："
+                "苗丽晓为国家税务总局河北省税务局党委纪检组副组长（副处长级）；"
+                "唐建国为国家税务总局河北省税务局企业所得税处副处长，试用期一年；"
+                "韩大伟为国家税务总局河北省税务局第一税务分局（大企业税收服务和管理局）副局长，试用期一年。"
+            ),
+        )
+        events = extract_appointment_events(notice)
+        self.assertEqual(len(events), 3)
+        self.assertEqual([e.person_name for e in events], ["苗丽晓", "唐建国", "韩大伟"])
+        self.assertEqual(events[0].title_raw, "副组长")
+        self.assertEqual(events[1].title_raw, "副处长")
+        self.assertEqual(events[1].probation_years, 1)
+        self.assertEqual(events[2].title_raw, "副局长")
+        self.assertNotIn("人事", [e.person_name for e in events])
+
+    def test_appoint_prefix_not_swallowed_into_name(self) -> None:
+        from tax_platform.models.entities import NoticeMeta
+
+        notice = NoticeMeta(
+            bureau_code="beijing",
+            title="任免",
+            source_url="http://beijing.example/n.html",
+            raw_text="决定，任命陈双格为政策法规处副处长；任命赵伟为副局长。",
+        )
+        events = extract_appointment_events(notice)
+        self.assertEqual([e.person_name for e in events], ["陈双格", "赵伟"])
+        self.assertNotIn("命陈双格", [e.person_name for e in events])
+
+    def test_rejects_renmian_title_false_positive(self) -> None:
+        from tax_platform.models.entities import NoticeMeta
+
+        notice = NoticeMeta(
+            bureau_code="guangdong",
+            title="任免工作人员",
+            source_url="http://gd.example/n.html",
+            raw_text=(
+                "国家税务总局广东省税务局任免工作人员（2025年3月）"
+                "国家税务总局广东省税务局决定，任命："
+                "陈杰为国家税务总局广东省税务局办公室主任；"
+                "申深为国家税务总局广东省税务局人事处处长。"
+            ),
+        )
+        events = extract_appointment_events(notice)
+        names = [e.person_name for e in events]
+        self.assertEqual(names, ["陈杰", "申深"])
+        self.assertNotIn("省税务局", names)
+        self.assertNotIn("人事", names)
+
 
 if __name__ == "__main__":
     unittest.main()

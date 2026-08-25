@@ -16,7 +16,12 @@ from tax_platform.crawler.job_io import dump_json
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crawl public appointment notices.")
     parser.add_argument("--site", default="pdtax", help="Bureau code, e.g. pdtax / shanghai / all")
-    parser.add_argument("--limit", type=int, default=3)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Max notices per site; 0 = no cap (all links on the list page)",
+    )
     parser.add_argument("--delay", type=float, default=0.4)
     parser.add_argument("--output", default="output/appointment_crawl.json")
     parser.add_argument(

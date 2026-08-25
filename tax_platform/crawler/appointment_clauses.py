@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from tax_platform.models.entities import AppointmentEvent, NoticeMeta
+from tax_platform.normalize.person import SKIP_NAMES, is_plausible_person_name
 
 NAME_RE = r"[\u4e00-\u9fa5·]{2,4}"
 TITLE_SUFFIXES = (
@@ -16,12 +17,16 @@ TITLE_SUFFIXES = (
     "处长",
     "副主任",
     "主任",
+    "常务副局长",
     "副局长",
     "局长",
+    "副校长",
+    "校长",
     "副组长",
     "组长",
     "党委书记",
     "纪检组组长",
+    "总法律顾问",
     "总会计师",
     "总经济师",
     "总审计师",
@@ -29,38 +34,102 @@ TITLE_SUFFIXES = (
     "二级巡视员",
     "巡视员",
 )
-APPOINT_RE = re.compile(rf"(?P<name>{NAME_RE})任(?P<post>[^；。]+)")
-DISMISS_RE = re.compile(rf"免去(?P<name>{NAME_RE})(?:的(?P<post>[^；。]+?))?职务")
-PROBATION_RE = re.compile(r"任职试用期为(?P<years>一|二|1|2)年")
+# Optional leading 「任命 / 任命：」 so 「任命陈双格为…」 does not swallow 命 into the name.
+APPOINT_AS_RE = re.compile(
+    rf"(?:任命[:：]?)*(?P<name>{NAME_RE})为(?P<post>[^；。;，,]+)"
+)
+# Shanghai-style: "赵健健任保税区税务分局法制科副科长"
+APPOINT_RE = re.compile(rf"(?P<name>{NAME_RE})任(?P<post>[^；。;]+)")
+DISMISS_RE = re.compile(rf"免去(?P<name>{NAME_RE})(?:的(?P<post>[^；。;]+?))?职务")
+PROBATION_RE = re.compile(r"(?:任职)?试用期为?(?P<years>一|二|1|2)年")
+
+_BODY_MARKERS = (
+    "决定，任命",
+    "决定:任命",
+    "决定：任命",
+    "研究决定，任命",
+    "研究决定:任命",
+    "研究决定：任命",
+    "决定，免去",
+    "决定：免去",
+    "任命：",
+    "任命:",
+)
 
 
 def extract_appointment_events(notice: NoticeMeta) -> list[AppointmentEvent]:
     events: list[AppointmentEvent] = []
-    clauses = _split_clauses(notice.raw_text)
+    body = _focus_body(notice.raw_text)
+    clauses = _split_clauses(body)
     for clause in clauses:
-        probation = _probation_years(clause)
-        dismiss = DISMISS_RE.search(clause)
-        if dismiss:
-            bureau, department, title = split_post(dismiss.group("post") or "")
-            events.append(
-                _event(
-                    notice,
-                    name=dismiss.group("name"),
-                    action="dismiss",
-                    bureau=bureau,
-                    department=department,
-                    title=title,
-                    clause=clause,
-                )
-            )
+        events.extend(_events_from_clause(notice, clause))
+    return _dedupe_events(events)
+
+
+def _events_from_clause(notice: NoticeMeta, clause: str) -> list[AppointmentEvent]:
+    out: list[AppointmentEvent] = []
+    probation = _probation_years(clause)
+
+    for dismiss in DISMISS_RE.finditer(clause):
+        name = _clean_name(dismiss.group("name"))
+        if not is_plausible_person_name(name):
             continue
-        appoint = APPOINT_RE.search(clause)
-        if appoint and "免去" not in clause[: appoint.start() + 2]:
-            bureau, department, title = split_post(appoint.group("post"))
-            events.append(
+        bureau, department, title = split_post(dismiss.group("post") or "")
+        out.append(
+            _event(
+                notice,
+                name=name,
+                action="dismiss",
+                bureau=bureau,
+                department=department,
+                title=title,
+                clause=clause,
+            )
+        )
+
+    for appoint_as in APPOINT_AS_RE.finditer(clause):
+        name = _clean_name(appoint_as.group("name"))
+        post = appoint_as.group("post")
+        if not is_plausible_person_name(name):
+            continue
+        if post.startswith("任"):
+            continue
+        if not _looks_like_post(post):
+            continue
+        bureau, department, title = split_post(post)
+        if not (title or department or "税务" in post):
+            continue
+        out.append(
+            _event(
+                notice,
+                name=name,
+                action="appoint",
+                bureau=bureau,
+                department=department,
+                title=title,
+                clause=clause,
+                probation_years=probation or _probation_years(clause[appoint_as.end() :]),
+            )
+        )
+
+    # Only use 「X任Y」 when this clause had no 「X为Y」 hits (avoids double-count).
+    if not out:
+        for appoint in APPOINT_RE.finditer(clause):
+            name = _clean_name(appoint.group("name"))
+            post = appoint.group("post")
+            if not is_plausible_person_name(name):
+                continue
+            if "免去" in clause[max(0, appoint.start() - 2) : appoint.start() + 2]:
+                continue
+            if not _looks_like_post(post):
+                continue
+            bureau, department, title = split_post(post)
+            if not (title or department):
+                continue
+            out.append(
                 _event(
                     notice,
-                    name=appoint.group("name"),
+                    name=name,
                     action="appoint",
                     bureau=bureau,
                     department=department,
@@ -69,24 +138,39 @@ def extract_appointment_events(notice: NoticeMeta) -> list[AppointmentEvent]:
                     probation_years=probation or _probation_years(clause[appoint.end() :]),
                 )
             )
-    return events
+    return out
 
 
 def split_post(post: str) -> tuple[str | None, str | None, str | None]:
     """Split '保税区税务分局法制科副科长' into unit / department / title."""
     text = re.sub(r"\s+", "", post)
     text = text.replace("职务", "").strip("的")
-    title = _match_suffix(text)
-    remainder = text[: -len(title)] if title else text
+    text = PROBATION_RE.sub("", text).strip("，, 、")
+    # Drop trailing rank / probation fragments left after imperfect splits.
+    text = re.split(r"(?:，|,)?(?:任职)?试用期", text)[0].strip("，, ")
+    # Drop rank notes like （副处长级）; keep （装备和采购处） by only stripping *级*.
+    text_for_title = re.sub(r"[（(][^）)]*级[）)]", "", text)
+    title = _match_suffix(text_for_title)
+    remainder = text_for_title[: -len(title)] if title else text_for_title
+    # If parentheses still wrap a department alias, keep inner dept when useful.
+    remainder = remainder.strip("（）() ")
     bureau = None
     department = remainder or None
-    for token in ("税务分局", "税务局"):
+    for token in ("税务分局", "税务局", "干部学校"):
         index = remainder.rfind(token) if remainder else -1
         if index != -1:
             end = index + len(token)
             bureau = remainder[:end]
             department = remainder[end:] or None
             break
+    if department:
+        department = department.strip("（）() ，,") or None
+        # Reject department values that are clearly title/probation residue.
+        if department and any(
+            tok in department
+            for tok in ("试用期", "任命", "免去", "通知", "主办", "调研员", "巡视员")
+        ):
+            department = None
     return bureau, department, title
 
 
@@ -97,9 +181,72 @@ def _match_suffix(text: str) -> str | None:
     return None
 
 
+def _looks_like_post(post: str) -> bool:
+    if not post:
+        return False
+    # 「任免…」「任职…」 false positives from titles / list pages.
+    if post.startswith(("免", "职")):
+        return False
+    if post.startswith("用期"):
+        return False
+    if "通知" in post[:6]:
+        return False
+    return bool(
+        _match_suffix(re.sub(r"[（(][^）)]*级[）)]", "", post))
+        or any(
+            tok in post
+            for tok in (
+                "税务",
+                "处",
+                "科",
+                "所",
+                "局",
+                "办公室",
+                "中心",
+                "纪检",
+                "党委",
+                "分局",
+            )
+        )
+    )
+
+
+def _valid_name(name: str) -> bool:
+    """Backward-compatible alias."""
+    return is_plausible_person_name(name) and name not in SKIP_NAMES
+
+
+def _clean_name(name: str) -> str:
+    return re.sub(r"(同志)+$", "", (name or "").strip())
+
+
+def _focus_body(text: str) -> str:
+    """Drop nav/chrome before the appoint decision block when possible."""
+    if not text:
+        return ""
+    best = -1
+    for marker in _BODY_MARKERS:
+        idx = text.find(marker)
+        if idx != -1 and (best == -1 or idx < best):
+            best = idx
+    if best != -1:
+        return text[best:]
+    return text
+
+
 def _split_clauses(text: str) -> list[str]:
-    parts = re.split(r"[。]", text)
-    return [part.strip() for part in parts if part.strip()]
+    parts = re.split(r"[。；;]", text)
+    merged: list[str] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        # Keep "任职试用期为一年" attached to the preceding appoint clause.
+        if merged and (part.startswith("任职试用期") or part.startswith("试用期")):
+            merged[-1] = f"{merged[-1]}，{part}"
+            continue
+        merged.append(part)
+    return merged
 
 
 def _probation_years(clause: str) -> int | None:
@@ -107,6 +254,23 @@ def _probation_years(clause: str) -> int | None:
     if not match:
         return None
     return 2 if match.group("years") in {"二", "2"} else 1
+
+
+def _dedupe_events(events: list[AppointmentEvent]) -> list[AppointmentEvent]:
+    seen: set[tuple[str, str, str, str]] = set()
+    out: list[AppointmentEvent] = []
+    for event in events:
+        key = (
+            event.person_name,
+            event.action,
+            event.title_raw or "",
+            event.department_raw or "",
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(event)
+    return out
 
 
 def _event(
@@ -130,5 +294,5 @@ def _event(
         effective_on=notice.issued_on,
         source_url=notice.source_url,
         notice_title=notice.title,
-        raw_clause=clause,
+        raw_clause=clause[:500],
     )

@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from tax_platform.config.sites import ALL_SITES, BureauSite, get_site, list_sites
+from tax_platform.config.bureau_site import BureauSite
+from tax_platform.config.sites import ALL_SITES, get_site, list_sites
 from tax_platform.crawler.crawl_state import (
     load_crawl_state,
     sites_due_for_crawl,
@@ -30,6 +31,9 @@ def resolve_site_codes(
             return [item.code for item in due_sites]
         get_site(site)
         return [site] if any(item.code == site for item in due_sites) else []
+
+    if site == "national":
+        return [item.code for item in ALL_SITES if item.level in {"headquarters", "province"}]
 
     if site == "all":
         sites = list_sites(level) if level else ALL_SITES

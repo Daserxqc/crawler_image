@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tax_platform.config.sites_shanghai import SHANGHAI_SITES, list_sites
+from tax_platform.config.sites import ALL_SITES, list_sites
+from tax_platform.config.sites_shanghai import SHANGHAI_SITES
 from tax_platform.crawler.http_client import (
     create_session,
     ensure_trailing_slash,
@@ -20,10 +21,11 @@ from tax_platform.crawler.http_client import (
 
 
 def main() -> None:
+    assert len(ALL_SITES) == 48
     assert len(SHANGHAI_SITES) == 17
     assert len(list_sites("district")) == 16
-    assert len(list_sites("province")) == 1
-    assert SHANGHAI_SITES[0].code == "shanghai"
+    assert len(list_sites("province")) == 31
+    assert len(list_sites("headquarters")) == 1
 
     list_url = "https://shanghai.chinatax.gov.cn/pdtax/xxgk/rsrm"
     child = resolve_list_child_url(list_url, "./202606/t480619.html")
@@ -40,7 +42,8 @@ def main() -> None:
     assert "t442819" in final_url or "ldjj" in final_url
 
     payload = {
-        "sites": len(SHANGHAI_SITES),
+        "sites_total": len(ALL_SITES),
+        "shanghai_sites": len(SHANGHAI_SITES),
         "leader_final_url": final_url,
         "sample_detail_url": child,
         "leader_html_bytes": len(html),
