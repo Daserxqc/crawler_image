@@ -48,17 +48,32 @@ def entry_to_bureau_site(entry: dict[str, Any]) -> BureauSite | None:
     appt = (entry.get("appointment_list_url") or "").strip()
     leader = (entry.get("leader_intro_url") or "").strip()
     home = (entry.get("home_url") or "").strip()
-    if not code or not appt:
+    if not code:
+        return None
+    # Need at least one crawlable list URL.
+    if not appt and not leader:
         return None
     if not home:
-        home = appt.rsplit("/xxgk/", 1)[0] + "/" if "/xxgk/" in appt else appt
-    if not leader:
-        # Best-effort: rsrm/rsxx → ldjj
+        seed = appt or leader
+        if "/xxgk/" in seed:
+            home = seed.rsplit("/xxgk/", 1)[0] + "/"
+        elif "/col/col" in seed:
+            home = seed
+        else:
+            home = seed
+    if appt and "?" not in appt and not appt.endswith("/") and "index.html" not in appt:
+        appt = appt + "/"
+    if leader and "?" not in leader and not leader.endswith("/") and "index.html" not in leader:
+        leader = leader + "/"
+    if not leader and appt:
         leader = appt
         for old, new in (("/xxgk/rsrm/", "/xxgk/ldjj/"), ("/xxgk/rsxx/", "/xxgk/ldjj/")):
             if old in appt:
                 leader = appt.replace(old, new)
                 break
+    if not appt:
+        # Leader-only city hub (e.g. some Shandong cities); appointments crawl will skip.
+        appt = ""
     level = entry.get("level") or "city"
     if level not in {"city", "district"}:
         level = "city"
@@ -68,8 +83,8 @@ def entry_to_bureau_site(entry: dict[str, Any]) -> BureauSite | None:
         level=level,
         parent_code=entry.get("parent_code"),
         home_url=home,
-        appointment_list_url=appt if appt.endswith("/") else appt + "/",
-        leader_intro_url=leader if leader.endswith("/") else leader + "/",
+        appointment_list_url=appt,
+        leader_intro_url=leader or appt,
         region=entry.get("region"),
     )
 

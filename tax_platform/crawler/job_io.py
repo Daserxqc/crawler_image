@@ -35,6 +35,9 @@ def resolve_site_codes(
     if site == "national":
         return [item.code for item in ALL_SITES if item.level in {"headquarters", "province"}]
 
+    if site == "cities":
+        return [item.code for item in ALL_SITES if item.level in {"city", "district"}]
+
     if site == "all":
         sites = list_sites(level) if level else ALL_SITES
         return [item.code for item in sites]

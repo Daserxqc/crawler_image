@@ -1,4 +1,4 @@
-"""Helpers for 政府信息公开 (xxgk) AJAX list columns (Zhejiang style)."""
+"""Helpers for 政府信息公开 (xxgk) AJAX list columns (Zhejiang / Shandong style)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,23 @@ import re
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from bs4 import BeautifulSoup
+
+_TREE_IFRAME_RE = re.compile(
+    r"""(?:src|SRC)\s*=\s*['"]([^'"]*xxgk/tree\.jsp\?[^'"]+)['"]""",
+    re.I,
+)
+_AREA_RE = re.compile(r"[?&]area=([0-9A-Za-z]+)", re.I)
+_DIVID_RE = re.compile(r"[?&]divid=(div\d+)", re.I)
+_FUNCLICK_RE = re.compile(
+    r"""funclick\(\s*\\?['"]([A-Za-z0-9]+)\\?['"]\s*,[^)]*\)\s*;?\s*\\?["']?\s*>\s*([^<]{1,40})""",
+    re.I,
+)
+_LOAD_DYNAMIC_SD = re.compile(
+    r"""loadDynamic\(\s*['"](/module/xxgk/search\.jsp\?infotypeId=)['"]\s*\+\s*[a-zA-Z_]+"""
+    r""".*?area=([0-9A-Za-z]+)['"]\s*,\s*['"]([^'"]+)['"]"""
+    r"""(?:\s*,\s*['"][^'"]*['"]){3}\s*,\s*['"]([^'"]*)['"]""",
+    re.I | re.S,
+)
 
 
 def find_xxgk_load_call(html: str) -> tuple[str, str, str, str] | None:
@@ -36,19 +53,174 @@ def find_xxgk_load_call(html: str) -> tuple[str, str, str, str] | None:
     return None
 
 
+def extract_xxgk_shell(html: str, page_url: str) -> dict[str, str] | None:
+    """Pull area / divid / webid / tree URL from a statutory-disclosure shell page."""
+    area = None
+    divid = None
+    webid = "1"
+    tree = None
+
+    iframe = _TREE_IFRAME_RE.search(html)
+    if iframe:
+        tree = urljoin(page_url, iframe.group(1))
+        area_m = _AREA_RE.search(tree)
+        divid_m = _DIVID_RE.search(tree)
+        if area_m:
+            area = area_m.group(1)
+        if divid_m:
+            divid = divid_m.group(1)
+
+    sd = _LOAD_DYNAMIC_SD.search(html)
+    if sd:
+        area = area or sd.group(2)
+        divid = divid or sd.group(3)
+        webid = sd.group(4) or webid
+
+    # Fallback: loadDynamic with empty/variable infotype + area in query
+    if not area:
+        m = re.search(
+            r"loadDynamic\([^)]*area=([0-9A-Za-z]+)[^)]*['\"]\s*,\s*['\"]([^'\"]+)['\"]",
+            html,
+            re.I | re.S,
+        )
+        if m:
+            area = m.group(1)
+            divid = divid or m.group(2)
+
+    if not area or not divid:
+        return None
+    return {"area": area, "divid": divid, "webid": webid, "tree_url": tree or ""}
+
+
+def parse_xxgk_tree_labels(tree_html: str) -> dict[str, str]:
+    """Map sidebar label → infotypeId from dTree funclick(...) nodes."""
+    out: dict[str, str] = {}
+    for match in _FUNCLICK_RE.finditer(tree_html):
+        infotype_id = match.group(1)
+        label = re.sub(r"\s+", "", match.group(2))
+        if label and infotype_id:
+            out[label] = infotype_id
+    return out
+
+
+def resolve_xxgk_infotype(
+    tree_labels: dict[str, str],
+    *,
+    want: str,
+) -> str | None:
+    """Pick infotypeId for 人事任免 / 领导简介."""
+    if want == "appointment":
+        for key in ("人事任免", "干部任免"):
+            if key in tree_labels:
+                return tree_labels[key]
+        for label, iid in tree_labels.items():
+            if "任免" in label:
+                return iid
+    if want == "leader":
+        for key in ("领导简介", "领导介绍", "现任领导"):
+            if key in tree_labels:
+                return tree_labels[key]
+        for label, iid in tree_labels.items():
+            if "领导" in label:
+                return iid
+    return None
+
+
+def fetch_xxgk_search_html(
+    session,
+    *,
+    page_url: str,
+    area: str,
+    divid: str,
+    webid: str,
+    infotype_id: str,
+    sortfield: str = "createdatetime:0,orderid:0",
+) -> str | None:
+    """POST module/xxgk/search.jsp the way tree.jsp funclick does."""
+    ajax_url = urljoin(
+        page_url,
+        (
+            f"/module/xxgk/search.jsp?divid={divid}&infotypeId={infotype_id}"
+            f"&jdid={webid}&area={area}&sortfield={sortfield}"
+        ),
+    )
+    response = session.post(
+        ajax_url,
+        data="",
+        headers={
+            "Referer": page_url,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Requested-With": "XMLHttpRequest",
+        },
+        timeout=30,
+        verify=False,
+    )
+    if response.status_code >= 400:
+        return None
+    encodings = [response.apparent_encoding, "utf-8", "gb18030"]
+    html = ""
+    for encoding in encodings:
+        if not encoding:
+            continue
+        try:
+            html = response.content.decode(encoding, errors="ignore")
+            break
+        except LookupError:
+            continue
+    if not html:
+        return None
+    if len(BeautifulSoup(html, "html.parser").select("a[href]")) < 1 and "任免" not in html:
+        return None
+    return html
+
+
 def fetch_xxgk_list_html(session, page_url: str, page_html: str) -> str | None:
-    """POST the xxgk search.jsp endpoint the same way loadDynamic does."""
+    """POST the xxgk search.jsp endpoint the same way loadDynamic / funclick does."""
+    parsed = urlparse(page_url)
+    qs = parse_qs(parsed.query)
+    number = (qs.get("number") or [None])[0]
+
+    shell = extract_xxgk_shell(page_html, page_url)
+    if shell:
+        infotype_id = number
+        if not infotype_id and shell.get("tree_url"):
+            try:
+                tree_resp = session.get(
+                    shell["tree_url"],
+                    headers={"Referer": page_url},
+                    timeout=30,
+                    verify=False,
+                )
+                tree_html = tree_resp.content.decode("utf-8", errors="ignore")
+                labels = parse_xxgk_tree_labels(tree_html)
+                infotype_id = resolve_xxgk_infotype(labels, want="appointment")
+            except Exception:  # noqa: BLE001
+                infotype_id = None
+        if infotype_id:
+            html = fetch_xxgk_search_html(
+                session,
+                page_url=page_url,
+                area=shell["area"],
+                divid=shell["divid"],
+                webid=shell["webid"],
+                infotype_id=infotype_id,
+            )
+            if html:
+                return html
+
     call = find_xxgk_load_call(page_html)
     if call is None:
         return None
     path_with_query, divid, cid, webid = call
+    # Prefer ?number= over empty default cid from shell page.
+    if number:
+        cid = number
     ajax_url = urljoin(page_url, path_with_query)
-    parsed = urlparse(ajax_url)
-    # Mirror dynamic.js when URL already contains area=
+    parsed_ajax = urlparse(ajax_url)
     data = (
         f"infotypeId={cid}&jdid={webid}&divid={divid}"
         f"&vc_title=&vc_number=&vc_filenumber=&vc_all=&texttype=&fbtime="
-        f"&{parsed.query}"
+        f"&{parsed_ajax.query}"
     )
     response = session.post(
         ajax_url,

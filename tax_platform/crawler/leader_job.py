@@ -39,6 +39,14 @@ def _load_leader_hub(session, hub_url: str) -> tuple[str, str]:
 
 def crawl_leaders_site(code: str, *, delay: float = 0.4) -> LeaderCrawlResult:
     site = get_site(code)
+    if not (site.leader_intro_url or "").strip():
+        return LeaderCrawlResult(
+            bureau=code,
+            hub_url="",
+            page_count=0,
+            leaders=[],
+            failed=[{"url": "", "error": "no leader_intro_url"}],
+        )
     session = create_session()
     hub_url, hub_html = _load_leader_hub(session, site.leader_intro_url)
     pages = [hub_url]

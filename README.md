@@ -20,8 +20,8 @@
 | 总局 | 1 | `sta` |
 | 省局 | 31 | 含直辖市 |
 | 上海区县 | 16 | 已手工配置路径前缀 |
-| 地市/其他区县 | 0+ | 由 `city_sites_registry.json` 并入 |
-| **内置合计** | **48** | `--site all` 会遍历内置 + registry |
+| 地市/其他区县 | 0+ | 由 `city_sites_registry.json` 并入（省站「市局频道」`/col/colN/` + 上海区县路径） |
+| **内置合计** | **48** | `--site all` 会遍历内置 + registry；`--site cities` 仅市/区 |
 
 ## 常用命令
 
@@ -41,8 +41,11 @@ python scripts/ingest_crawl.py
 python scripts/recompute_tenure.py
 python scripts/list_persons.py
 
-# 地市发现 / 空分管摸底
+# 市局发现（省站底部「市局频道」→ 人事任免/领导简介栏目）
 python scripts/discover_city_sites.py --offline-check
+python scripts/discover_city_sites.py --parent jiangsu --parent shandong --output output/city_sites_registry.json
+python scripts/crawl_appointments.py --site cities --level city --limit 20 --output output/city_appointments.json
+python scripts/crawl_leaders.py --site cities --output output/city_leaders.json
 python scripts/discover_city_sites.py --parent shanghai --dry-run
 python scripts/report_empty_oversight.py --db output/tax_hr.db
 

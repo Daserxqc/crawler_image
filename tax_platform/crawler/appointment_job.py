@@ -49,6 +49,13 @@ class AppointmentCrawlResult:
 
 
 def _load_appointment_list_html(session, list_url: str) -> tuple[str, str]:
+    # Warm WAF cookies on the column shell (drop ?number=) when needed.
+    if "chinatax.gov.cn" in list_url and "number=" in list_url:
+        shell = list_url.split("?", 1)[0]
+        try:
+            fetch_html(session, shell, follow_meta_refresh=False)
+        except Exception:  # noqa: BLE001
+            pass
     final_url, html = fetch_html(session, list_url, follow_meta_refresh=False)
     items_html = materialize_list_html(html)
     wcm = _fetch_wcm_static_pages(session, final_url, html)
@@ -129,6 +136,16 @@ def crawl_appointments_site(
     is already known are skipped (notice-level delta crawl).
     """
     site = get_site(code)
+    if not (site.appointment_list_url or "").strip():
+        return AppointmentCrawlResult(
+            bureau=code,
+            list_url="",
+            list_count=0,
+            notices=[],
+            events=[],
+            failed=[{"url": "", "error": "no appointment_list_url"}],
+            skipped=0,
+        )
     session = create_session()
     list_url, list_html = _load_appointment_list_html(session, site.appointment_list_url)
     items = parse_appointment_list(list_html, list_url)
