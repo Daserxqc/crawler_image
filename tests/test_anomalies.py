@@ -109,6 +109,43 @@ class AnomalyCorrectionTests(unittest.TestCase):
         ).fetchone()["status"]
         self.assertEqual(status, "resolved")
 
+    def test_rename_syncs_sibling_events(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO appointment_events (
+                notice_id, bureau_code, person_name, action, department_raw, title_raw,
+                effective_on, notice_title, source_url, raw_clause
+            ) VALUES (
+                (SELECT id FROM notices LIMIT 1), 'beijing', '命陈双格', 'dismiss',
+                '政策法规处', '副处长', '2025-02-01', '任免',
+                'https://example.com/e3', '免去命陈双格的副处长职务'
+            )
+            """
+        )
+        self.conn.commit()
+        sibling_ids = [
+            r["id"]
+            for r in self.conn.execute(
+                "SELECT id FROM appointment_events WHERE person_name='命陈双格'"
+            )
+        ]
+        self.assertGreaterEqual(len(sibling_ids), 2)
+        apply_correction(
+            target_type="appointment_event",
+            target_id=str(sibling_ids[0]),
+            patch={"person_name": "陈双格"},
+            note="同步改名",
+            conn=self.conn,
+        )
+        left = self.conn.execute(
+            "SELECT count(*) FROM appointment_events WHERE person_name='命陈双格'"
+        ).fetchone()[0]
+        renamed = self.conn.execute(
+            "SELECT count(*) FROM appointment_events WHERE person_name='陈双格'"
+        ).fetchone()[0]
+        self.assertEqual(left, 0)
+        self.assertGreaterEqual(renamed, 2)
+
     def test_api_scan_and_correct(self) -> None:
         r = self.client.post("/api/anomalies/scan")
         self.assertEqual(r.status_code, 200)

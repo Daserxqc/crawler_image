@@ -87,10 +87,31 @@ def clean_names(conn: sqlite3.Connection) -> dict[str, int]:
     after = conn.execute("SELECT COUNT(*) FROM appointment_events").fetchone()[0]
     changed["deduped_events"] = before - after
 
+    # Rebuild persons from appointments first (keep appointment-only people), then leaders.
     conn.execute("DELETE FROM persons")
     conn.execute(
         """
-        INSERT OR REPLACE INTO persons (id, name, bureau_code, gender, title_current, source_leader_url)
+        INSERT INTO persons (id, name, bureau_code, gender, title_current, source_leader_url)
+        SELECT
+            bureau_code || ':' || person_name,
+            person_name,
+            bureau_code,
+            NULL,
+            (
+                SELECT e2.title_raw FROM appointment_events e2
+                WHERE e2.bureau_code = e.bureau_code AND e2.person_name = e.person_name
+                ORDER BY COALESCE(e2.effective_on, '') DESC, e2.id DESC
+                LIMIT 1
+            ),
+            NULL
+        FROM (
+            SELECT DISTINCT bureau_code, person_name FROM appointment_events
+        ) e
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO persons (id, name, bureau_code, gender, title_current, source_leader_url)
         SELECT
             bureau_code || ':' || person_name,
             person_name,
@@ -99,6 +120,11 @@ def clean_names(conn: sqlite3.Connection) -> dict[str, int]:
             title_raw,
             source_url
         FROM leader_duties
+        WHERE person_name IS NOT NULL AND TRIM(person_name) != ''
+        ON CONFLICT(id) DO UPDATE SET
+            gender=COALESCE(excluded.gender, persons.gender),
+            title_current=COALESCE(excluded.title_current, persons.title_current),
+            source_leader_url=COALESCE(excluded.source_leader_url, persons.source_leader_url)
         """
     )
     return changed

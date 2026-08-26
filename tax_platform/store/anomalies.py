@@ -547,16 +547,71 @@ def _patch_target(
     values = list(patch.values()) + [target_id]
     db.execute(f"UPDATE {table} SET {sets} WHERE {id_col} = ?", values)
 
-    # Keep persons.name in sync when renaming events/leaders.
+    # Keep sibling events / leaders / persons in sync when renaming.
     if "person_name" in patch and target_type in {"appointment_event", "leader_duty"}:
         old_name = row["person_name"]
         new_name = patch["person_name"]
         bureau = row["bureau_code"]
         if is_plausible_person_name(new_name) and old_name != new_name:
+            db.execute(
+                """
+                UPDATE appointment_events
+                SET person_name = ?
+                WHERE bureau_code = ? AND person_name = ?
+                """,
+                (new_name, bureau, old_name),
+            )
+            db.execute(
+                """
+                UPDATE leader_duties
+                SET person_name = ?
+                WHERE bureau_code = ? AND person_name = ?
+                """,
+                (new_name, bureau, old_name),
+            )
+            db.execute(
+                """
+                UPDATE data_anomalies
+                SET person_name = ?
+                WHERE bureau_code = ? AND person_name = ? AND status = 'open'
+                """,
+                (new_name, bureau, old_name),
+            )
             new_id = f"{bureau}:{new_name}"
             old_id = f"{bureau}:{old_name}"
             existing = db.execute("SELECT id FROM persons WHERE id = ?", (new_id,)).fetchone()
             if existing:
+                db.execute("DELETE FROM persons WHERE id = ?", (old_id,))
+            else:
+                db.execute(
+                    "UPDATE persons SET id=?, name=? WHERE id=?",
+                    (new_id, new_name, old_id),
+                )
+    elif "name" in patch and target_type == "person":
+        old_name = row["name"]
+        new_name = patch["name"]
+        bureau = row["bureau_code"]
+        if is_plausible_person_name(new_name) and old_name != new_name:
+            db.execute(
+                """
+                UPDATE appointment_events
+                SET person_name = ?
+                WHERE bureau_code = ? AND person_name = ?
+                """,
+                (new_name, bureau, old_name),
+            )
+            db.execute(
+                """
+                UPDATE leader_duties
+                SET person_name = ?
+                WHERE bureau_code = ? AND person_name = ?
+                """,
+                (new_name, bureau, old_name),
+            )
+            new_id = f"{bureau}:{new_name}"
+            old_id = row["id"]
+            existing = db.execute("SELECT id FROM persons WHERE id = ?", (new_id,)).fetchone()
+            if existing and existing["id"] != old_id:
                 db.execute("DELETE FROM persons WHERE id = ?", (old_id,))
             else:
                 db.execute(

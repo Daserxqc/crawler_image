@@ -169,9 +169,43 @@ def export_profiles(
 
 
 def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> int:
-    existing = db.execute("SELECT id FROM notices WHERE source_url = ?", (notice["source_url"],)).fetchone()
+    existing = db.execute(
+        "SELECT id, raw_text FROM notices WHERE source_url = ?",
+        (notice["source_url"],),
+    ).fetchone()
     if existing:
-        return int(existing["id"])
+        nid = int(existing["id"])
+        new_raw = notice.get("raw_text")
+        old_raw = existing["raw_text"]
+        # Prefer longer / newly filled body when re-crawling the same URL.
+        if new_raw and (not old_raw or len(str(new_raw)) >= len(str(old_raw))):
+            raw_text = new_raw
+        else:
+            raw_text = old_raw
+        db.execute(
+            """
+            UPDATE notices SET
+                bureau_code = COALESCE(?, bureau_code),
+                title = COALESCE(?, title),
+                published_at = COALESCE(?, published_at),
+                doc_no = COALESCE(?, doc_no),
+                issuer = COALESCE(?, issuer),
+                issued_on = COALESCE(?, issued_on),
+                raw_text = ?
+            WHERE id = ?
+            """,
+            (
+                notice.get("bureau_code"),
+                notice.get("title"),
+                notice.get("published_at"),
+                notice.get("doc_no"),
+                notice.get("issuer"),
+                notice.get("issued_on"),
+                raw_text,
+                nid,
+            ),
+        )
+        return nid
     cursor = db.execute(
         """
         INSERT INTO notices (bureau_code, title, source_url, published_at, doc_no, issuer, issued_on, raw_text)

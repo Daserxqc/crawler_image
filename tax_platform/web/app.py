@@ -153,7 +153,8 @@ def api_search(
         raise HTTPException(status_code=400, detail="需要 title / department / name 至少一个")
     conn = connect(_db_path())
     try:
-        hits = search_people(
+        # limit=0 → full match set so total is not truncated by the page size.
+        all_hits = search_people(
             title=title,
             department=department,
             name=name,
@@ -161,14 +162,16 @@ def api_search(
             bureau_code=bureau,
             date_from=date_from,
             date_to=date_to,
-            limit=limit,
+            limit=0,
             conn=conn,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         conn.close()
-    return {"total": len(hits), "items": [_slim_hit(h) for h in hits]}
+    total = len(all_hits)
+    hits = all_hits[:limit] if limit > 0 else all_hits
+    return {"total": total, "items": [_slim_hit(h) for h in hits]}
 
 
 @app.get("/api/departments/lookup")

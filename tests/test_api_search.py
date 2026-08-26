@@ -98,6 +98,16 @@ class SearchFilterTests(unittest.TestCase):
         names = {i["name"] for i in body["items"]}
         self.assertIn("测试乙", names)
 
+        # total must reflect full match set, not the page size.
+        r2 = self.client.get(
+            "/api/search",
+            params={"department": "政策法规处", "bureau_code": "shanghai", "limit": 1},
+        )
+        self.assertEqual(r2.status_code, 200)
+        body2 = r2.json()
+        self.assertGreaterEqual(body2["total"], 2)
+        self.assertEqual(len(body2["items"]), 1)
+
         p = self.client.get(
             "/api/departments/penetrate",
             params={"department": "政策法规处", "bureau_code": "shanghai"},

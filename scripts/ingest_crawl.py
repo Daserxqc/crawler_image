@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tax_platform.store import ingest_appointment_results, ingest_leader_results
+from tax_platform.store.schema import connect
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,11 +23,26 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    db_path = Path(args.db)
     appts = json.loads(Path(args.appointments).read_text(encoding="utf-8"))
     leaders = json.loads(Path(args.leaders).read_text(encoding="utf-8"))
-    event_count = ingest_appointment_results(appts)
-    leader_count = ingest_leader_results(leaders)
-    print(json.dumps({"events": event_count, "leaders": leader_count, "db": str(Path(args.db).resolve())}, ensure_ascii=False))
+    conn = connect(db_path)
+    try:
+        event_count = ingest_appointment_results(appts, conn=conn)
+        leader_count = ingest_leader_results(leaders, conn=conn)
+        conn.commit()
+    finally:
+        conn.close()
+    print(
+        json.dumps(
+            {
+                "events": event_count,
+                "leaders": leader_count,
+                "db": str(db_path.resolve()),
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,69 @@ if str(ROOT) not in sys.path:
 
 from tax_platform.store import get_person_profile, ingest_appointment_results, ingest_leader_results, person_id
 from tax_platform.store.schema import connect
+from tax_platform.store.tenure import build_current_from_history
+
+
+class TenureTests(unittest.TestCase):
+    def test_newer_dismiss_blocks_older_appoint(self) -> None:
+        history = [
+            {
+                "change_type": "dismiss",
+                "title": "副处长",
+                "department": "政策法规处",
+                "date": "2025-01-01",
+                "source_url": "https://example.com/d",
+            },
+            {
+                "change_type": "appoint",
+                "title": "副处长",
+                "department": "政策法规处",
+                "date": "2024-01-01",
+                "unit": "上海市税务局",
+                "source_url": "https://example.com/a",
+            },
+        ]
+        current = build_current_from_history(history)
+        self.assertFalse(current["is_current"])
+        self.assertIsNone(current["since"])
+        self.assertIsNone(current["source_url"])
+
+    def test_leader_does_not_override_dismiss(self) -> None:
+        history = [
+            {
+                "change_type": "dismiss",
+                "title": "副处长",
+                "department": "政策法规处",
+                "date": "2025-01-01",
+            },
+            {
+                "change_type": "appoint",
+                "title": "副处长",
+                "department": "政策法规处",
+                "date": "2024-01-01",
+            },
+        ]
+        leader = {
+            "title_raw": "副处长",
+            "departments_json": '["政策法规处"]',
+            "source_url": "https://example.com/l",
+        }
+        current = build_current_from_history(history, leader=leader)
+        self.assertFalse(current["is_current"])
+
+    def test_open_appoint_is_current(self) -> None:
+        history = [
+            {
+                "change_type": "appoint",
+                "title": "处长",
+                "department": "政策法规处",
+                "date": "2024-06-01",
+                "source_url": "https://example.com/a",
+            },
+        ]
+        current = build_current_from_history(history)
+        self.assertTrue(current["is_current"])
+        self.assertEqual(current["title"], "处长")
 
 
 class StoreTests(unittest.TestCase):
@@ -78,6 +141,33 @@ class StoreTests(unittest.TestCase):
                 assert zheng is not None
                 self.assertEqual(zheng["leader_intro_url"], "https://example.test/pdtax/ldjj.html")
                 self.assertIn("现任", zheng["tags"])
+
+                # Re-crawl same URL with fuller body — notice must update, not keep empty stub.
+                ingest_appointment_results(
+                    [
+                        {
+                            "bureau": "pdtax",
+                            "notices": [
+                                {
+                                    "bureau_code": "pdtax",
+                                    "title": "关于赵健健等职务任免的通知（更新）",
+                                    "source_url": "https://example.test/pdtax/rsrm/202606/t480619.html",
+                                    "issued_on": "2026-06-04",
+                                    "raw_text": "经研究，决定：赵健健任法制科副科长。免去某某职务。" * 3,
+                                }
+                            ],
+                            "events": [],
+                        }
+                    ],
+                    conn=conn,
+                )
+                conn.commit()
+                notice = conn.execute(
+                    "SELECT title, raw_text FROM notices WHERE source_url = ?",
+                    ("https://example.test/pdtax/rsrm/202606/t480619.html",),
+                ).fetchone()
+                self.assertIn("更新", notice["title"])
+                self.assertGreater(len(notice["raw_text"]), 20)
             finally:
                 conn.close()
 

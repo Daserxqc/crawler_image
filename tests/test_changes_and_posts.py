@@ -111,6 +111,10 @@ class ChangesAndPostsTests(unittest.TestCase):
         self.assertTrue(profile["current"]["is_current"])
         self.assertEqual(profile["history"][0]["change_type"], "promote")
 
+        li = get_person_profile("shanghai:李乙", conn=self.conn)
+        assert li is not None
+        self.assertFalse(li["current"]["is_current"])
+
     def test_api_changes_and_posts(self) -> None:
         r = self.client.get("/api/changes", params={"bureau_code": "shanghai", "limit": 10})
         self.assertEqual(r.status_code, 200)

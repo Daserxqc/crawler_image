@@ -11,6 +11,9 @@ from tax_platform.normalize.department import normalize_department, org_level_fo
 from tax_platform.normalize.title import normalize_title
 from tax_platform.config.sites import get_site
 
+_APPOINT_TYPES = frozenset({"appoint", "transfer", "promote", "probation_confirm"})
+_LEAVE_TYPES = frozenset({"dismiss", "retire"})
+
 
 def build_current_from_history(
     history: list[dict[str, Any]],
@@ -19,20 +22,18 @@ def build_current_from_history(
     person_title: str | None = None,
 ) -> dict[str, Any]:
     """Derive current post from reverse-chrono history (+ optional leader intro)."""
-    # Walk newest → oldest; latest appoint wins unless a newer dismiss closes that post.
+    # Walk newest → oldest. Latest appoint wins only if no newer leave closes that post.
     open_post: dict[str, Any] | None = None
+    newer_leaves: list[dict[str, Any]] = []
     for row in history:
         ctype = row.get("change_type") or ""
-        if ctype == "dismiss" or ctype == "retire":
-            # A dismiss of the same title/dept closes an open appoint.
-            if open_post and _same_post(open_post, row):
-                open_post = None
+        if ctype in _LEAVE_TYPES:
+            newer_leaves.append(row)
             continue
-        if ctype in {"appoint", "transfer", "promote", "probation_confirm"}:
-            if open_post is None:
-                open_post = row
-            # keep walking only to allow dismiss of this open post if somehow unordered
-            # but history is newest first, so first appoint is current candidate.
+        if ctype in _APPOINT_TYPES:
+            if any(_leave_closes(leave, row) for leave in newer_leaves):
+                continue
+            open_post = row
             break
 
     departments: list[str] = []
@@ -61,6 +62,9 @@ def build_current_from_history(
             "source_url": open_post.get("source_url"),
         }
 
+    # Appointment history says the person left — do not force 现任 from a stale leader page.
+    left = bool(newer_leaves) or _newest_is_leave(history)
+
     if leader:
         nt = normalize_title(title)
         return {
@@ -68,7 +72,7 @@ def build_current_from_history(
             "department": departments[0] if departments else None,
             "title": nt.canonical if nt else title,
             "departments": departments,
-            "is_current": True,
+            "is_current": not left,
             "since": None,
             "source_url": leader.get("source_url"),
         }
@@ -133,12 +137,37 @@ def enrich_history_rows(
             "action": data.get("action"),
         }
         materialized.append(item)
-        if change.value != "dismiss" and change.value != "retire":
+        if change.value not in _LEAVE_TYPES:
             prev_title = data.get("title_raw") or prev_title
             prev_dept = data.get("department_raw") or prev_dept
 
     materialized.reverse()  # newest first
     return materialized
+
+
+def _leave_closes(leave: dict[str, Any], appoint: dict[str, Any]) -> bool:
+    """True if a newer leave event closes the older appoint."""
+    if _same_post(leave, appoint):
+        return True
+    # Blanket leave (免去职务) with empty title/dept closes any prior open post.
+    leave_title = (leave.get("title") or "").strip()
+    leave_dept = (leave.get("department") or "").strip()
+    if not leave_title and not leave_dept:
+        return True
+    # Title-only leave (免去处长职务) closes matching title regardless of dept.
+    if leave_title and not leave_dept:
+        return leave_title == (appoint.get("title") or "").strip()
+    return False
+
+
+def _newest_is_leave(history: list[dict[str, Any]]) -> bool:
+    for row in history:
+        ctype = row.get("change_type") or ""
+        if ctype in _LEAVE_TYPES:
+            return True
+        if ctype in _APPOINT_TYPES:
+            return False
+    return False
 
 
 def _same_post(a: dict[str, Any], b: dict[str, Any]) -> bool:
