@@ -8,7 +8,7 @@ from typing import Any
 
 from tax_platform.normalize.change import classify_change
 from tax_platform.normalize.department import normalize_department, org_level_for_bureau
-from tax_platform.normalize.title import normalize_title
+from tax_platform.normalize.title import normalize_title, title_sort_rank
 from tax_platform.config.sites import get_site
 
 _APPOINT_TYPES = frozenset({"appoint", "transfer", "promote", "probation_confirm"})
@@ -128,6 +128,7 @@ def enrich_history_rows(
             "date": data.get("effective_on"),
             "level": level_label,
             "unit": data.get("bureau_name"),
+            "bureau_code": data.get("bureau_code") or bureau_code,
             "department": dept.canonical_name if dept else data.get("department_raw"),
             "title": title.canonical if title else data.get("title_raw"),
             "change_type": change.value,
@@ -142,6 +143,9 @@ def enrich_history_rows(
             prev_dept = data.get("department_raw") or prev_dept
 
     materialized.reverse()  # newest first
+    # Same calendar day: higher office first (副局长 before 科长).
+    materialized.sort(key=lambda r: title_sort_rank(r.get("title")))
+    materialized.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
     return materialized
 
 
@@ -184,3 +188,99 @@ def _level_label(level: str | None) -> str | None:
         "district": "区局层面",
     }
     return mapping.get(level or "")
+
+
+def recompute_person_current(
+    db: sqlite3.Connection,
+    bureau_code: str,
+    person_name: str,
+) -> dict[str, Any]:
+    """Derive current post and write it back onto ``persons``."""
+    pid = f"{bureau_code}:{person_name}"
+    person = db.execute("SELECT * FROM persons WHERE id = ?", (pid,)).fetchone()
+    if person is None:
+        db.execute(
+            """
+            INSERT INTO persons (id, name, bureau_code, gender, title_current, source_leader_url)
+            VALUES (?, ?, ?, NULL, NULL, NULL)
+            """,
+            (pid, person_name, bureau_code),
+        )
+        person_title = None
+    else:
+        person_title = person["title_current"]
+
+    leader = db.execute(
+        """
+        SELECT * FROM leader_duties
+        WHERE bureau_code = ? AND person_name = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (bureau_code, person_name),
+    ).fetchone()
+    events = db.execute(
+        """
+        SELECT * FROM appointment_events
+        WHERE bureau_code = ? AND person_name = ?
+        ORDER BY COALESCE(effective_on, '') DESC, id DESC
+        """,
+        (bureau_code, person_name),
+    ).fetchall()
+    history = enrich_history_rows(list(events), bureau_code=bureau_code)
+    leader_dict = dict(leader) if leader is not None else None
+    current = build_current_from_history(
+        history,
+        leader=leader_dict,
+        person_title=person_title,
+    )
+    dept = current.get("department")
+    if not dept and current.get("departments"):
+        dept = current["departments"][0]
+    db.execute(
+        """
+        UPDATE persons SET
+            title_current = ?,
+            department_current = ?,
+            is_current = ?,
+            current_since = ?,
+            current_source_url = ?,
+            source_leader_url = COALESCE(?, source_leader_url),
+            gender = COALESCE(?, gender)
+        WHERE id = ?
+        """,
+        (
+            current.get("title"),
+            dept,
+            1 if current.get("is_current") else 0,
+            current.get("since"),
+            current.get("source_url"),
+            leader["source_url"] if leader else None,
+            leader["gender"] if leader else None,
+            pid,
+        ),
+    )
+    return current
+
+
+def recompute_persons(
+    db: sqlite3.Connection,
+    person_keys: set[tuple[str, str]] | None = None,
+) -> int:
+    """Recompute persisted current tenure for selected (or all) people.
+
+    *person_keys* is a set of ``(bureau_code, person_name)``.
+    """
+    if person_keys is None:
+        rows = db.execute("SELECT bureau_code, name FROM persons").fetchall()
+        keys = {(r["bureau_code"], r["name"]) for r in rows}
+        for r in db.execute("SELECT DISTINCT bureau_code, person_name FROM appointment_events"):
+            keys.add((r["bureau_code"], r["person_name"]))
+        for r in db.execute("SELECT DISTINCT bureau_code, person_name FROM leader_duties"):
+            keys.add((r["bureau_code"], r["person_name"]))
+    else:
+        keys = person_keys
+    for bureau, name in sorted(keys):
+        if not name:
+            continue
+        recompute_person_current(db, bureau, name)
+    return len(keys)

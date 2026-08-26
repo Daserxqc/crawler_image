@@ -74,6 +74,45 @@ def fetch_dataproxy_html(session, proxy_url: str, *, referer: str | None = None)
     return _decode(response)
 
 
+def fetch_dataproxy_pages(
+    session,
+    proxy_url: str,
+    *,
+    referer: str | None = None,
+    max_pages: int = 40,
+) -> str:
+    """Fetch dataproxy page=1..N and concatenate record HTML."""
+    from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
+
+    parsed = urlparse(proxy_url)
+    base_q = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+    chunks: list[str] = []
+    empty_streak = 0
+    for page in range(1, max_pages + 1):
+        q = dict(base_q)
+        q["page"] = str(page)
+        page_url = urlunparse(
+            (parsed.scheme, parsed.netloc, parsed.path, "", urlencode(q), "")
+        )
+        html = fetch_dataproxy_html(session, page_url, referer=referer)
+        material = materialize_list_html(html)
+        # Stop when a page yields no appointment-looking anchors.
+        from bs4 import BeautifulSoup
+
+        anchors = BeautifulSoup(material, "html.parser").select("a[href]")
+        if len(anchors) < 1:
+            empty_streak += 1
+            if empty_streak >= 2:
+                break
+            continue
+        empty_streak = 0
+        chunks.append(material)
+        # Typical page size ~15; if short, likely last page.
+        if len(anchors) < 8 and page > 1:
+            break
+    return "\n".join(chunks) if chunks else ""
+
+
 def _decode(response) -> str:
     encodings = [response.apparent_encoding, "utf-8", "gb18030"]
     if response.encoding and response.encoding.lower() not in {"iso-8859-1", "latin-1"}:

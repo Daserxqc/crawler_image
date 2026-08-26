@@ -168,6 +168,143 @@ class StoreTests(unittest.TestCase):
                 ).fetchone()
                 self.assertIn("更新", notice["title"])
                 self.assertGreater(len(notice["raw_text"]), 20)
+
+                # Persisted tenure after ingest.
+                person = conn.execute(
+                    "SELECT is_current, title_current FROM persons WHERE id = ?",
+                    (person_id("pdtax", "赵健健"),),
+                ).fetchone()
+                self.assertEqual(person["is_current"], 1)
+                self.assertTrue(person["title_current"])
+            finally:
+                conn.close()
+
+    def test_body_change_updates_event_keeps_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.db"
+            conn = connect(db)
+            try:
+                url = "https://example.test/n1"
+                first = [
+                    {
+                        "bureau": "pdtax",
+                        "notices": [
+                            {
+                                "bureau_code": "pdtax",
+                                "title": "任免",
+                                "source_url": url,
+                                "raw_text": "赵健健任法制科副科长。",
+                            }
+                        ],
+                        "events": [
+                            {
+                                "person_name": "赵健健",
+                                "action": "appoint",
+                                "department_raw": "法制科",
+                                "title_raw": "副科长",
+                                "effective_on": "2026-01-01",
+                                "source_url": url,
+                                "notice_title": "任免",
+                                "raw_clause": "赵健健任法制科副科长。",
+                            }
+                        ],
+                    }
+                ]
+                ingest_appointment_results(first, conn=conn)
+                conn.commit()
+                eid = conn.execute(
+                    "SELECT id FROM appointment_events WHERE source_url=?", (url,)
+                ).fetchone()["id"]
+
+                second = [
+                    {
+                        "bureau": "pdtax",
+                        "notices": [
+                            {
+                                "bureau_code": "pdtax",
+                                "title": "任免（修订）",
+                                "source_url": url,
+                                "raw_text": "赵健健任法制科副科长。" + "补充说明。" * 20,
+                            }
+                        ],
+                        "events": [
+                            {
+                                "person_name": "赵健健",
+                                "action": "appoint",
+                                "department_raw": "法制科",
+                                "title_raw": "副科长（试用期一年）",
+                                "effective_on": "2026-01-01",
+                                "source_url": url,
+                                "notice_title": "任免（修订）",
+                                "raw_clause": "赵健健任法制科副科长。",
+                            }
+                        ],
+                    }
+                ]
+                ingest_appointment_results(second, conn=conn)
+                conn.commit()
+                row = conn.execute(
+                    "SELECT id, title_raw FROM appointment_events WHERE source_url=?",
+                    (url,),
+                ).fetchone()
+                self.assertEqual(row["id"], eid)
+                self.assertIn("试用期", row["title_raw"] or "")
+            finally:
+                conn.close()
+
+    def test_dismiss_persists_not_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "d.db"
+            conn = connect(db)
+            try:
+                payload = [
+                    {
+                        "bureau": "shanghai",
+                        "notices": [
+                            {
+                                "bureau_code": "shanghai",
+                                "title": "任免",
+                                "source_url": "https://example.com/a",
+                                "raw_text": "李乙任政策法规处副处长。",
+                            },
+                            {
+                                "bureau_code": "shanghai",
+                                "title": "免职",
+                                "source_url": "https://example.com/d",
+                                "raw_text": "免去李乙的政策法规处副处长职务。",
+                            },
+                        ],
+                        "events": [
+                            {
+                                "person_name": "李乙",
+                                "action": "appoint",
+                                "department_raw": "政策法规处",
+                                "title_raw": "副处长",
+                                "effective_on": "2024-01-01",
+                                "source_url": "https://example.com/a",
+                                "notice_title": "任免",
+                                "raw_clause": "李乙任政策法规处副处长。",
+                            },
+                            {
+                                "person_name": "李乙",
+                                "action": "dismiss",
+                                "department_raw": "政策法规处",
+                                "title_raw": "副处长",
+                                "effective_on": "2025-01-01",
+                                "source_url": "https://example.com/d",
+                                "notice_title": "免职",
+                                "raw_clause": "免去李乙的政策法规处副处长职务。",
+                            },
+                        ],
+                    }
+                ]
+                ingest_appointment_results(payload, conn=conn)
+                conn.commit()
+                row = conn.execute(
+                    "SELECT is_current FROM persons WHERE id=?",
+                    ("shanghai:李乙",),
+                ).fetchone()
+                self.assertEqual(row["is_current"], 0)
             finally:
                 conn.close()
 

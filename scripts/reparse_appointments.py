@@ -13,11 +13,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tax_platform.crawler.appointment_clauses import extract_appointment_events
+from tax_platform.crawler.appointment_detail import parse_date_from_title
 from tax_platform.models.entities import NoticeMeta
 from tax_platform.normalize.person import is_plausible_person_name
 from tax_platform.store.dept_catalog import rebuild_catalogs
+from tax_platform.store.events import sync_events_for_source
 from tax_platform.store.ingest import person_id
 from tax_platform.store.schema import connect
+from tax_platform.store.tenure import recompute_persons
 
 
 def _parse_day(value: str | None) -> date | None:
@@ -28,6 +31,21 @@ def _parse_day(value: str | None) -> date | None:
         return date.fromisoformat(text)
     except ValueError:
         return None
+
+
+def _notice_issued_on(row) -> date | None:
+    """Prefer decision date in title over stale CMS/crawl issued_on."""
+    titled = parse_date_from_title(row["title"])
+    if titled is not None:
+        return titled
+    issued = _parse_day(row["issued_on"])
+    if issued is not None:
+        return issued
+    # published_at may exist on notices
+    keys = row.keys() if hasattr(row, "keys") else []
+    if "published_at" in keys:
+        return _parse_day(row["published_at"])
+    return None
 
 
 def _rebuild_persons(conn) -> None:
@@ -41,12 +59,7 @@ def _rebuild_persons(conn) -> None:
             person_name,
             bureau_code,
             NULL,
-            (
-                SELECT e2.title_raw FROM appointment_events e2
-                WHERE e2.bureau_code = e.bureau_code AND e2.person_name = e.person_name
-                ORDER BY COALESCE(e2.effective_on, '') DESC, e2.id DESC
-                LIMIT 1
-            ),
+            NULL,
             NULL
         FROM (
             SELECT DISTINCT bureau_code, person_name FROM appointment_events
@@ -62,10 +75,9 @@ def _rebuild_persons(conn) -> None:
         conn.execute(
             """
             INSERT INTO persons (id, name, bureau_code, gender, title_current, source_leader_url)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, NULL, ?)
             ON CONFLICT(id) DO UPDATE SET
                 gender=COALESCE(excluded.gender, persons.gender),
-                title_current=COALESCE(excluded.title_current, persons.title_current),
                 source_leader_url=COALESCE(excluded.source_leader_url, persons.source_leader_url)
             """,
             (
@@ -73,108 +85,72 @@ def _rebuild_persons(conn) -> None:
                 leader["person_name"],
                 leader["bureau_code"],
                 leader["gender"],
-                leader["title_raw"],
                 leader["source_url"],
             ),
         )
+    recompute_persons(conn)
 
 
 def reparse_appointments(db_path: Path) -> dict[str, int]:
     conn = connect(db_path)
     notices = conn.execute(
         """
-        SELECT id, bureau_code, title, source_url, issued_on, raw_text
+        SELECT id, bureau_code, title, source_url, issued_on, published_at, raw_text
         FROM notices
         WHERE raw_text IS NOT NULL AND length(raw_text) > 20
         """
     ).fetchall()
 
     old_events = conn.execute("SELECT count(*) FROM appointment_events").fetchone()[0]
-
-    # Upsert by unique key so existing event ids (and anomaly target_id) stay stable.
     seen_ids: set[int] = set()
     inserted = 0
     updated = 0
     skipped_notices = 0
+    dates_fixed = 0
     for row in notices:
+        issued = _notice_issued_on(row)
+        if issued is not None and str(row["issued_on"] or "")[:10] != issued.isoformat():
+            conn.execute(
+                "UPDATE notices SET issued_on = ? WHERE id = ?",
+                (issued.isoformat(), int(row["id"])),
+            )
+            dates_fixed += 1
         notice = NoticeMeta(
             bureau_code=row["bureau_code"],
             title=row["title"] or "",
             source_url=row["source_url"],
-            issued_on=_parse_day(row["issued_on"]),
+            issued_on=issued,
             raw_text=row["raw_text"] or "",
         )
         events = extract_appointment_events(notice)
         if not events:
             skipped_notices += 1
             continue
+        payloads: list[dict] = []
         for event in events:
             if not is_plausible_person_name(event.person_name):
                 continue
             payload = asdict(event)
             if isinstance(payload.get("effective_on"), date):
                 payload["effective_on"] = payload["effective_on"].isoformat()
-            clause = payload.get("raw_clause") or ""
-            existing = conn.execute(
-                """
-                SELECT id FROM appointment_events
-                WHERE source_url = ?
-                  AND person_name = ?
-                  AND action = ?
-                  AND COALESCE(raw_clause, '') = ?
-                """,
-                (
-                    payload["source_url"],
-                    payload["person_name"],
-                    payload["action"],
-                    clause,
-                ),
-            ).fetchone()
-            values = (
-                row["id"],
-                row["bureau_code"],
-                payload["person_name"],
-                payload["action"],
-                payload["bureau_name"],
-                payload["department_raw"],
-                payload["title_raw"],
-                payload["probation_years"],
-                payload["effective_on"],
-                payload["notice_title"],
-                payload["raw_clause"],
-                payload["source_url"],
-            )
-            try:
-                if existing:
-                    eid = int(existing["id"])
-                    conn.execute(
-                        """
-                        UPDATE appointment_events SET
-                            notice_id=?, bureau_code=?, person_name=?, action=?,
-                            bureau_name=?, department_raw=?, title_raw=?,
-                            probation_years=?, effective_on=?, notice_title=?,
-                            raw_clause=?, source_url=?
-                        WHERE id=?
-                        """,
-                        values + (eid,),
-                    )
-                    seen_ids.add(eid)
-                    updated += 1
-                else:
-                    cursor = conn.execute(
-                        """
-                        INSERT INTO appointment_events (
-                            notice_id, bureau_code, person_name, action, bureau_name,
-                            department_raw, title_raw, probation_years, effective_on,
-                            notice_title, raw_clause, source_url
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        values,
-                    )
-                    seen_ids.add(int(cursor.lastrowid))
-                    inserted += 1
-            except Exception:
-                continue
+            payloads.append(payload)
+        if not payloads:
+            continue
+        stats = sync_events_for_source(
+            conn,
+            notice_id=int(row["id"]),
+            bureau_code=row["bureau_code"],
+            source_url=row["source_url"],
+            events=payloads,
+            drop_orphans=True,
+        )
+        inserted += stats["inserted"]
+        updated += stats["updated"]
+        for r in conn.execute(
+            "SELECT id FROM appointment_events WHERE source_url = ?",
+            (row["source_url"],),
+        ):
+            seen_ids.add(int(r["id"]))
 
     orphan_ids = [
         int(r["id"])
@@ -184,7 +160,6 @@ def reparse_appointments(db_path: Path) -> dict[str, int]:
     if orphan_ids:
         placeholders = ",".join("?" * len(orphan_ids))
         conn.execute(f"DELETE FROM appointment_events WHERE id IN ({placeholders})", orphan_ids)
-        # Drop open anomalies that pointed at removed event rows.
         conn.execute(
             f"""
             DELETE FROM data_anomalies
@@ -221,6 +196,7 @@ def reparse_appointments(db_path: Path) -> dict[str, int]:
         "new_events": inserted + updated,
         "event_people": people,
         "bad_names_left": bad_left,
+        "dates_fixed": dates_fixed,
         "dept_catalog": catalog["dept_rows"],
         "title_catalog": catalog["title_rows"],
     }

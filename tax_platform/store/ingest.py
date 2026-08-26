@@ -5,8 +5,14 @@ import sqlite3
 from typing import Any
 
 from tax_platform.config.sites import get_site
+from tax_platform.crawler.appointment_list import is_appointment_list_url
+from tax_platform.store.events import sync_events_for_source, upsert_appointment_event
 from tax_platform.store.schema import connect
-from tax_platform.store.tenure import build_current_from_history, enrich_history_rows
+from tax_platform.store.tenure import (
+    build_current_from_history,
+    enrich_history_rows,
+    recompute_persons,
+)
 
 
 def person_id(bureau_code: str, name: str) -> str:
@@ -21,22 +27,81 @@ def ingest_appointment_results(
     owns = conn is None
     db = conn or connect()
     count = 0
+    touched: set[tuple[str, str]] = set()
     payload = results if isinstance(results, list) else [results]
     for site_result in payload:
         bureau = site_result["bureau"]
         notice_by_url = {notice["source_url"]: notice for notice in site_result.get("notices", [])}
+        events_by_url: dict[str, list[dict[str, Any]]] = {}
+        for event in site_result.get("events", []):
+            url = event.get("source_url")
+            if not url:
+                continue
+            events_by_url.setdefault(url, []).append(event)
+
         # Persist list/detail notices even when body fetch or event parse failed.
         for notice in site_result.get("notices", []):
-            _upsert_notice(db, {**notice, "bureau_code": notice.get("bureau_code") or bureau})
-        for event in site_result.get("events", []):
-            notice = notice_by_url.get(event.get("source_url"))
+            notice = {**notice, "bureau_code": notice.get("bureau_code") or bureau}
+            url = notice.get("source_url") or ""
+            if is_appointment_list_url(url):
+                continue
+            notice_id, body_changed = _upsert_notice(db, notice)
+            url = notice["source_url"]
+            events = events_by_url.pop(url, [])
+            if body_changed and events:
+                stats = sync_events_for_source(
+                    db,
+                    notice_id=notice_id,
+                    bureau_code=bureau,
+                    source_url=url,
+                    events=events,
+                    drop_orphans=True,
+                )
+                count += stats["inserted"]
+                for ev in events:
+                    name = ev.get("person_name")
+                    if name:
+                        _ensure_person_stub(db, bureau, name)
+                        touched.add((bureau, name))
+            elif events:
+                # Body unchanged: insert new events only (update matching keys).
+                for event in events:
+                    _, inserted = upsert_appointment_event(
+                        db,
+                        notice_id=notice_id,
+                        bureau_code=bureau,
+                        event=event,
+                    )
+                    if inserted:
+                        count += 1
+                    name = event.get("person_name")
+                    if name:
+                        _ensure_person_stub(db, bureau, name)
+                        touched.add((bureau, name))
+
+        # Events whose notice was missing from the notices list.
+        for url, events in events_by_url.items():
+            notice = notice_by_url.get(url)
             if notice is None:
                 continue
             notice = {**notice, "bureau_code": notice.get("bureau_code") or bureau}
-            notice_id = _upsert_notice(db, notice)
-            if _insert_event(db, bureau, notice_id, event):
-                _upsert_person_from_event(db, bureau, event)
-                count += 1
+            notice_id, _ = _upsert_notice(db, notice)
+            for event in events:
+                _, inserted = upsert_appointment_event(
+                    db,
+                    notice_id=notice_id,
+                    bureau_code=bureau,
+                    event=event,
+                )
+                if inserted:
+                    count += 1
+                name = event.get("person_name")
+                if name:
+                    _ensure_person_stub(db, bureau, name)
+                    touched.add((bureau, name))
+
+    if touched:
+        recompute_persons(db, touched)
     if owns:
         db.commit()
         db.close()
@@ -51,13 +116,19 @@ def ingest_leader_results(
     owns = conn is None
     db = conn or connect()
     count = 0
+    touched: set[tuple[str, str]] = set()
     payload = results if isinstance(results, list) else [results]
     for site_result in payload:
         bureau = site_result["bureau"]
         for leader in site_result.get("leaders", []):
             _upsert_leader(db, bureau, leader)
-            _upsert_person_from_leader(db, bureau, leader)
+            name = leader.get("person_name")
+            if name:
+                _ensure_person_stub(db, bureau, name, gender=leader.get("gender"), source_leader_url=leader.get("source_url"))
+                touched.add((bureau, name))
             count += 1
+    if touched:
+        recompute_persons(db, touched)
     if owns:
         db.commit()
         db.close()
@@ -75,6 +146,7 @@ def get_person_profile(pid: str, *, conn: sqlite3.Connection | None = None) -> d
 
     bureau_code = person["bureau_code"]
     name = person["name"]
+    site = None
     try:
         site = get_site(bureau_code)
         region = site.region
@@ -96,6 +168,17 @@ def get_person_profile(pid: str, *, conn: sqlite3.Connection | None = None) -> d
         """,
         (bureau_code, name),
     ).fetchall()
+    # Leaders may be indexed under one bureau while appointment notices were
+    # ingested under another — fall back to name-wide search when local is empty.
+    if not events:
+        events = db.execute(
+            """
+            SELECT * FROM appointment_events
+            WHERE person_name = ?
+            ORDER BY COALESCE(effective_on, '') DESC, id DESC
+            """,
+            (name,),
+        ).fetchall()
 
     history = enrich_history_rows(list(events), bureau_code=bureau_code)
     leader_dict = dict(leader) if leader is not None else None
@@ -109,6 +192,8 @@ def get_person_profile(pid: str, *, conn: sqlite3.Connection | None = None) -> d
         "id": pid,
         "name": name,
         "bureau_code": bureau_code,
+        "bureau_name": site.name if site else bureau_code,
+        "org_level": site.level if site else None,
         "region": region,
         "tags": _build_tags(current, level_label),
         "current": current,
@@ -141,6 +226,8 @@ def list_persons(
             "name": row["name"],
             "bureau_code": row["bureau_code"],
             "title_current": row["title_current"],
+            "is_current": bool(row["is_current"]) if "is_current" in row.keys() else None,
+            "department_current": row["department_current"] if "department_current" in row.keys() else None,
         }
         for row in rows
     ]
@@ -168,7 +255,17 @@ def export_profiles(
     return profiles
 
 
-def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> int:
+def known_notice_urls(*, conn: sqlite3.Connection | None = None) -> set[str]:
+    owns = conn is None
+    db = conn or connect()
+    urls = {row[0] for row in db.execute("SELECT source_url FROM notices")}
+    if owns:
+        db.close()
+    return urls
+
+
+def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> tuple[int, bool]:
+    """Upsert notice. Returns ``(notice_id, body_changed)``."""
     existing = db.execute(
         "SELECT id, raw_text FROM notices WHERE source_url = ?",
         (notice["source_url"],),
@@ -177,9 +274,13 @@ def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> int:
         nid = int(existing["id"])
         new_raw = notice.get("raw_text")
         old_raw = existing["raw_text"]
-        # Prefer longer / newly filled body when re-crawling the same URL.
-        if new_raw and (not old_raw or len(str(new_raw)) >= len(str(old_raw))):
+        body_changed = False
+        if new_raw and (not old_raw or len(str(new_raw)) > len(str(old_raw))):
             raw_text = new_raw
+            body_changed = True
+        elif new_raw and old_raw and str(new_raw) != str(old_raw) and len(str(new_raw)) >= len(str(old_raw)):
+            raw_text = new_raw
+            body_changed = str(new_raw) != str(old_raw)
         else:
             raw_text = old_raw
         db.execute(
@@ -205,7 +306,7 @@ def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> int:
                 nid,
             ),
         )
-        return nid
+        return nid, body_changed
     cursor = db.execute(
         """
         INSERT INTO notices (bureau_code, title, source_url, published_at, doc_no, issuer, issued_on, raw_text)
@@ -222,41 +323,29 @@ def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> int:
             notice.get("raw_text"),
         ),
     )
-    return int(cursor.lastrowid)
+    # Treat first insert as body available for sync.
+    return int(cursor.lastrowid), bool(notice.get("raw_text"))
 
 
-def _insert_event(
+def _ensure_person_stub(
     db: sqlite3.Connection,
     bureau_code: str,
-    notice_id: int,
-    event: dict[str, Any],
-) -> bool:
-    try:
-        db.execute(
-            """
-            INSERT INTO appointment_events (
-                notice_id, bureau_code, person_name, action, bureau_name, department_raw,
-                title_raw, probation_years, effective_on, notice_title, raw_clause, source_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                notice_id,
-                bureau_code,
-                event.get("person_name"),
-                event.get("action"),
-                event.get("bureau_name"),
-                event.get("department_raw"),
-                event.get("title_raw"),
-                event.get("probation_years"),
-                event.get("effective_on"),
-                event.get("notice_title"),
-                event.get("raw_clause"),
-                event.get("source_url"),
-            ),
-        )
-        return True
-    except sqlite3.IntegrityError:
-        return False
+    name: str,
+    *,
+    gender: str | None = None,
+    source_leader_url: str | None = None,
+) -> None:
+    pid = person_id(bureau_code, name)
+    db.execute(
+        """
+        INSERT INTO persons (id, name, bureau_code, gender, title_current, source_leader_url)
+        VALUES (?, ?, ?, ?, NULL, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            gender=COALESCE(excluded.gender, persons.gender),
+            source_leader_url=COALESCE(excluded.source_leader_url, persons.source_leader_url)
+        """,
+        (pid, name, bureau_code, gender, source_leader_url),
+    )
 
 
 def _upsert_leader(db: sqlite3.Connection, bureau_code: str, leader: dict[str, Any]) -> None:
@@ -283,41 +372,6 @@ def _upsert_leader(db: sqlite3.Connection, bureau_code: str, leader: dict[str, A
             json.dumps(leader.get("departments_raw") or [], ensure_ascii=False),
             leader.get("source_url"),
         ),
-    )
-
-
-def _upsert_person_from_event(db: sqlite3.Connection, bureau_code: str, event: dict[str, Any]) -> None:
-    name = event.get("person_name")
-    if not name:
-        return
-    pid = person_id(bureau_code, name)
-    title = event.get("title_raw")
-    db.execute(
-        """
-        INSERT INTO persons (id, name, bureau_code, gender, title_current, source_leader_url)
-        VALUES (?, ?, ?, NULL, ?, NULL)
-        ON CONFLICT(id) DO UPDATE SET
-            title_current=COALESCE(excluded.title_current, persons.title_current)
-        """,
-        (pid, name, bureau_code, title),
-    )
-
-
-def _upsert_person_from_leader(db: sqlite3.Connection, bureau_code: str, leader: dict[str, Any]) -> None:
-    name = leader.get("person_name")
-    if not name:
-        return
-    pid = person_id(bureau_code, name)
-    db.execute(
-        """
-        INSERT INTO persons (id, name, bureau_code, gender, title_current, source_leader_url)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            gender=excluded.gender,
-            title_current=excluded.title_current,
-            source_leader_url=excluded.source_leader_url
-        """,
-        (pid, name, bureau_code, leader.get("gender"), leader.get("title_raw"), leader.get("source_url")),
     )
 
 

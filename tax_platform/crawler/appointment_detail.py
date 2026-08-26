@@ -9,9 +9,62 @@ from bs4 import BeautifulSoup
 
 from tax_platform.models.entities import NoticeMeta
 
-STOP_LABELS = ("发文单位", "发文日期", "索引号", "主题分类", "名称", "经研究", "决定")
+STOP_LABELS = ("发文单位", "发文日期", "发布日期", "发布时间", "索引号", "主题分类", "名称", "经研究", "决定")
 LABEL_ISSUED_ON = re.compile(r"发文日期[:：]\s*(20\d{2}-\d{2}-\d{2})")
-LABEL_PUBLISHED = re.compile(r"发布时间[:：]\s*(20\d{2}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)")
+LABEL_PUBLISH_DATE = re.compile(r"发布日期[:：]\s*(20\d{2}-\d{2}-\d{2})")
+LABEL_PUBLISHED = re.compile(
+    r"发布(?:时间|日期)[:：]\s*(20\d{2}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)"
+)
+# 标题里的任免决定日，如「…任免工作人员（2025年12月11日）」
+TITLE_DECISION_DAY = re.compile(
+    r"[（(]\s*(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*[）)]"
+)
+
+
+def parse_date_from_title(title: str | None) -> date | None:
+    """Extract the decision date embedded in notice titles (most factual for 变更日期)."""
+    if not title:
+        return None
+    match = TITLE_DECISION_DAY.search(title)
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def resolve_issued_on(
+    *,
+    title: str | None,
+    page_text: str = "",
+    meta_pubdate: str | None = None,
+    published_at: datetime | None = None,
+) -> date | None:
+    """Pick the factual notice/decision day.
+
+    Priority:
+    1. Decision date in title ``（YYYY年M月D日）`` — what users see as 任免日
+    2. 发文日期
+    3. 发布日期 / 发布时间
+    4. meta PubDate (often CMS move date; last resort)
+    5. published_at already parsed
+    """
+    titled = parse_date_from_title(title)
+    if titled is not None:
+        return titled
+    for pattern in (LABEL_ISSUED_ON, LABEL_PUBLISH_DATE, LABEL_PUBLISHED):
+        raw = _search(pattern, page_text)
+        day = _parse_date(raw)
+        if day is not None:
+            return day
+    if meta_pubdate:
+        day = _parse_date(meta_pubdate)
+        if day is not None:
+            return day
+    if published_at is not None:
+        return published_at.date()
+    return None
 
 
 def parse_appointment_detail(html: str, source_url: str, bureau_code: str) -> NoticeMeta:
@@ -20,12 +73,16 @@ def parse_appointment_detail(html: str, source_url: str, bureau_code: str) -> No
     text = _visible_text(soup)
     content_node = soup.select_one("#zoom, .contentmain, .TRS_Editor, .article_content, #content")
     content_text = _visible_text(content_node) if content_node is not None else ""
-    issued_on = _parse_date(_search(LABEL_ISSUED_ON, text))
-    meta_pub = soup.select_one('meta[name="PubDate"]')
-    if issued_on is None and meta_pub and meta_pub.get("content"):
-        issued_on = _parse_date(str(meta_pub.get("content")))
-    published_raw = _search(LABEL_PUBLISHED, text)
+    published_raw = _search(LABEL_PUBLISHED, text) or _search(LABEL_PUBLISH_DATE, text)
     published_at = _parse_datetime(published_raw) if published_raw else None
+    meta_pub = soup.select_one('meta[name="PubDate"]')
+    meta_pubdate = str(meta_pub.get("content")) if meta_pub and meta_pub.get("content") else None
+    issued_on = resolve_issued_on(
+        title=title,
+        page_text=text,
+        meta_pubdate=meta_pubdate,
+        published_at=published_at,
+    )
     if published_at is None and issued_on is not None:
         published_at = datetime.combine(issued_on, datetime.min.time())
     body_source = content_text or text

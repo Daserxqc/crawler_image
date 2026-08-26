@@ -15,6 +15,15 @@ SKIP_TITLE_KEYWORDS = ("招录", "招聘", "体检", "公示", "面试", "成绩
 KEEP_TITLE_KEYWORDS = ("任免", "任职", "免去", "免职")
 # Nav crumbs that match KEEP_TITLE_KEYWORDS but are not notice titles
 SKIP_EXACT_TITLES = {"人事任免", "人事信息", "任免", "任职信息"}
+LIST_PATH_SUFFIXES = (
+    "/rsrm",
+    "/rsxx",
+    "/jgrs",
+    "/rsgl",
+    "/ldjj",
+    "/ldzl",
+)
+LIST_TITLE_RE = re.compile(r"共\s*\d+\s*条")
 
 
 @dataclass(frozen=True)
@@ -37,7 +46,7 @@ def parse_appointment_list(html: str, list_url: str) -> list[AppointmentListItem
         if not _is_appointment_title(title, href):
             continue
         source_url = resolve_list_child_url(list_url, href)
-        if _is_list_page_url(source_url, list_url):
+        if is_appointment_list_url(source_url, list_url=list_url):
             continue
         if source_url in seen:
             continue
@@ -60,6 +69,8 @@ def parse_appointment_list(html: str, list_url: str) -> list[AppointmentListItem
 def _is_appointment_title(title: str, href: str = "") -> bool:
     if title.strip() in SKIP_EXACT_TITLES:
         return False
+    if LIST_TITLE_RE.search(title):
+        return False
     if any(keyword in title for keyword in SKIP_TITLE_KEYWORDS):
         return False
     if any(keyword in title for keyword in KEEP_TITLE_KEYWORDS):
@@ -74,12 +85,26 @@ def _is_appointment_title(title: str, href: str = "") -> bool:
     return False
 
 
-def _is_list_page_url(source_url: str, list_url: str) -> bool:
-    if _url_key(source_url) == _url_key(list_url):
+def is_appointment_list_url(source_url: str, *, list_url: str | None = None) -> bool:
+    """True when *source_url* is a栏目列表页, not a detail notice."""
+    if list_url and _url_key(source_url) == _url_key(list_url):
         return True
-    normalized = source_url.rstrip("/")
-    # e.g. .../rsrm without trailing article segment
-    return normalized.endswith("/rsrm") or normalized.endswith("/rsxx")
+    from urllib.parse import urlparse
+
+    path = urlparse(source_url).path.rstrip("/").lower()
+    if not path:
+        return True
+    if any(path.endswith(suffix) for suffix in LIST_PATH_SUFFIXES):
+        return True
+    # Bare section folders without article file
+    if re.search(r"/(?:rsrm|rsxx|jgrs|rsgl)/?$", path):
+        return True
+    return False
+
+
+def _is_list_page_url(source_url: str, list_url: str) -> bool:
+    """Backward-compatible alias."""
+    return is_appointment_list_url(source_url, list_url=list_url)
 
 
 def _url_key(url: str) -> str:

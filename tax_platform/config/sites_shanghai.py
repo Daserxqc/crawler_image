@@ -8,7 +8,7 @@ SHANGHAI_CITY = BureauSite(
     level="province",
     parent_code="sta",
     home_url="https://shanghai.chinatax.gov.cn/",
-    appointment_list_url="https://shanghai.chinatax.gov.cn/xxgk/rsxx/",
+    appointment_list_url="https://shanghai.chinatax.gov.cn/xxgk/rsxx/jgrs/",
     leader_intro_url="https://shanghai.chinatax.gov.cn/xxgk/ldjj/",
     region="上海市",
 )

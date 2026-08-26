@@ -46,16 +46,24 @@ def crawl_leaders_site(code: str, *, delay: float = 0.4) -> LeaderCrawlResult:
         if target not in pages:
             pages.append(target)
 
-    leaders: list[LeaderDuty] = []
+    leaders_by_name: dict[str, LeaderDuty] = {}
     failed: list[dict[str, str]] = []
     html_by_url = {hub_url: hub_html}
-    seen_names: set[str] = set()
+
+    def _remember(duty: LeaderDuty) -> None:
+        prev = leaders_by_name.get(duty.person_name)
+        if prev is None:
+            leaders_by_name[duty.person_name] = duty
+            return
+        # Prefer detail bios that carry oversight departments over hub stubs.
+        prev_score = (len(prev.departments_raw or []), len(prev.duty_summary or ""), len(prev.title_raw or ""))
+        new_score = (len(duty.departments_raw or []), len(duty.duty_summary or ""), len(duty.title_raw or ""))
+        if new_score > prev_score:
+            leaders_by_name[duty.person_name] = duty
 
     # If hub itself has profiles after materialize
     for duty in parse_leader_intro(hub_html, hub_url, site.code):
-        if duty.person_name not in seen_names:
-            seen_names.add(duty.person_name)
-            leaders.append(duty)
+        _remember(duty)
 
     for index, page_url in enumerate(pages):
         if delay and index:
@@ -71,10 +79,7 @@ def crawl_leaders_site(code: str, *, delay: float = 0.4) -> LeaderCrawlResult:
             else:
                 final_url, html = page_url, html_by_url[page_url]
             for duty in parse_leader_intro(html, final_url, site.code):
-                if duty.person_name in seen_names:
-                    continue
-                seen_names.add(duty.person_name)
-                leaders.append(duty)
+                _remember(duty)
         except Exception as exc:  # noqa: BLE001
             failed.append({"url": page_url, "error": str(exc)})
             logging.warning("Failed %s: %s", page_url, exc)
@@ -83,7 +88,7 @@ def crawl_leaders_site(code: str, *, delay: float = 0.4) -> LeaderCrawlResult:
         bureau=site.code,
         hub_url=hub_url,
         page_count=len(pages),
-        leaders=leaders,
+        leaders=list(leaders_by_name.values()),
         failed=failed,
     )
 

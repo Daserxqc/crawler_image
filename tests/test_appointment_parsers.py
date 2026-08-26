@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 
 from tax_platform.crawler.appointment_clauses import extract_appointment_events, split_post
 from tax_platform.crawler.appointment_detail import parse_appointment_detail
-from tax_platform.crawler.appointment_list import parse_appointment_list
+from tax_platform.crawler.appointment_list import is_appointment_list_url, parse_appointment_list
 
 FIXTURES = ROOT / "tests" / "fixtures"
 
@@ -24,6 +24,18 @@ class AppointmentListTests(unittest.TestCase):
         self.assertEqual(str(items[0].published_on), "2026-06-04")
         self.assertNotIn("体检", "".join(item.title for item in items))
 
+    def test_rejects_list_page_urls(self) -> None:
+        self.assertTrue(
+            is_appointment_list_url("https://shanghai.chinatax.gov.cn/xxgk/rsxx/jgrs/")
+        )
+        self.assertTrue(
+            is_appointment_list_url("https://shanghai.chinatax.gov.cn/pdtax/xxgk/rsrm/")
+        )
+        self.assertFalse(
+            is_appointment_list_url(
+                "https://shanghai.chinatax.gov.cn/xxgk/rsxx/202605/t480100.html"
+            )
+        )
 
 class AppointmentDetailTests(unittest.TestCase):
     def test_extracts_meta_and_body(self) -> None:
@@ -38,6 +50,34 @@ class AppointmentDetailTests(unittest.TestCase):
         self.assertEqual(str(notice.issued_on), "2026-06-04")
         self.assertIn("赵健健任保税区税务分局法制科副科长", notice.raw_text)
 
+    def test_title_decision_date_beats_stale_cms_date(self) -> None:
+        """北京等站点标题含任免日，CMS/目录日不可盖过事实日期。"""
+        from tax_platform.crawler.appointment_detail import parse_date_from_title, resolve_issued_on
+
+        title = "国家税务总局北京市税务局任免工作人员（2025年12月11日）"
+        self.assertEqual(str(parse_date_from_title(title)), "2025-12-11")
+        day = resolve_issued_on(
+            title=title,
+            page_text="发布日期：2025-12-26 发文日期：2026-08-21",
+            meta_pubdate="2026-08-21 10:00",
+        )
+        self.assertEqual(str(day), "2025-12-11")
+
+        html = f"""
+        <html><head><meta name="PubDate" content="2026-08-21 10:00"></head>
+        <body>
+        <h1>{title}</h1>
+        <p>发布日期：2025-12-26 13:25</p>
+        <p>发文日期：2026-08-21</p>
+        <div>国家税务总局北京市税务局决定：任命许亥隆为国家税务总局北京市税务局办公室主任；</div>
+        </body></html>
+        """
+        notice = parse_appointment_detail(html, "https://example.test/bj.html", "beijing")
+        self.assertEqual(str(notice.issued_on), "2025-12-11")
+        events = extract_appointment_events(notice)
+        self.assertTrue(events)
+        self.assertEqual(str(events[0].effective_on), "2025-12-11")
+
 
 class AppointmentClauseTests(unittest.TestCase):
     def test_split_post(self) -> None:
@@ -45,6 +85,12 @@ class AppointmentClauseTests(unittest.TestCase):
         self.assertEqual(bureau, "保税区税务分局")
         self.assertEqual(department, "法制科")
         self.assertEqual(title, "副科长")
+
+    def test_split_sta_sizhang(self) -> None:
+        bureau, department, title = split_post("国家税务总局人事司司长")
+        self.assertEqual(bureau, "国家税务总局")
+        self.assertEqual(department, "人事司")
+        self.assertEqual(title, "司长")
 
     def test_extract_appoint_and_dismiss(self) -> None:
         html = (FIXTURES / "appointment_detail.html").read_text(encoding="utf-8")
@@ -98,6 +144,22 @@ class AppointmentClauseTests(unittest.TestCase):
         self.assertEqual([e.person_name for e in events], ["陈双格", "赵伟"])
         self.assertNotIn("命陈双格", [e.person_name for e in events])
 
+    def test_jiangsu_property_tax_appoint_re(self) -> None:
+        from tax_platform.models.entities import NoticeMeta
+
+        notice = NoticeMeta(
+            bureau_code="jiangsu",
+            title="任免",
+            source_url="http://jiangsu.example/n.html",
+            raw_text="秦建平任财产和行为税处处长，试用期一年。",
+        )
+        events = extract_appointment_events(notice)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].person_name, "秦建平")
+        self.assertEqual(events[0].department_raw, "财产和行为税处")
+        self.assertEqual(events[0].title_raw, "处长")
+        self.assertNotIn("财产和行", [e.person_name for e in events])
+
     def test_rejects_renmian_title_false_positive(self) -> None:
         from tax_platform.models.entities import NoticeMeta
 
@@ -117,6 +179,35 @@ class AppointmentClauseTests(unittest.TestCase):
         self.assertEqual(names, ["陈杰", "申深"])
         self.assertNotIn("省税务局", names)
         self.assertNotIn("人事", names)
+
+    def test_split_concurrent_rank_titles(self) -> None:
+        bureau, department, title = split_post(
+            "国家税务总局新乡市税务局副局长、二级高级主办"
+        )
+        self.assertEqual(bureau, "国家税务总局新乡市税务局")
+        self.assertIsNone(department)
+        self.assertEqual(title, "副局长、二级高级主办")
+
+        bureau2, dept2, title2 = split_post(
+            "国家税务总局北京市朝阳区税务局党委委员、纪检组组长、三级高级主办"
+        )
+        self.assertEqual(bureau2, "国家税务总局北京市朝阳区税务局")
+        self.assertEqual(title2, "纪检组组长、三级高级主办")
+        self.assertEqual(dept2, "党委委员")
+
+        from tax_platform.models.entities import NoticeMeta
+
+        notice = NoticeMeta(
+            bureau_code="henan",
+            title="任免",
+            source_url="http://henan.example/n.html",
+            raw_text="决定，任命：郭天永为国家税务总局新乡市税务局副局长、二级高级主办。",
+        )
+        events = extract_appointment_events(notice)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].person_name, "郭天永")
+        self.assertEqual(events[0].title_raw, "副局长、二级高级主办")
+        self.assertTrue(events[0].title_raw)
 
 
 if __name__ == "__main__":

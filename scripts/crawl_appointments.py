@@ -11,6 +11,8 @@ if str(ROOT) not in sys.path:
 
 from tax_platform.crawler.appointment_job import appointments_payload, crawl_appointments
 from tax_platform.crawler.job_io import dump_json
+from tax_platform.store.ingest import known_notice_urls
+from tax_platform.store.schema import connect
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,18 +36,39 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional filter: headquarters / province / city / district",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Re-fetch every list item (disable notice-level incremental skip)",
+    )
+    parser.add_argument(
+        "--db",
+        default="output/tax_hr.db",
+        help="SQLite path used to load known notice URLs for incremental crawl",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = parse_args()
+    known: set[str] | None = None
+    incremental = not args.full
+    if incremental:
+        conn = connect(args.db)
+        try:
+            known = known_notice_urls(conn=conn)
+        finally:
+            conn.close()
+        logging.info("Incremental crawl: %s known notice URLs from %s", len(known), args.db)
     result = crawl_appointments(
         args.site,
         limit=args.limit,
         delay=args.delay,
         due_only=args.due_only,
         level=args.level,
+        incremental=incremental,
+        known_urls=known,
     )
     out = dump_json(args.output, appointments_payload(result))
     logging.info("Wrote %s", out)

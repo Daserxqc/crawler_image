@@ -1,4 +1,4 @@
-"""Public search HTTP API (PR7–PR9)."""
+"""Public search HTTP API (PR7–PR9) + simple static UI."""
 
 from __future__ import annotations
 
@@ -7,9 +7,11 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from fastapi import Body, FastAPI, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from tax_platform.config.sites import list_sites
+from tax_platform.config.sta_units import list_sta_units, unit_keywords
 from tax_platform.search.changes import list_changes, post_archive
 from tax_platform.search.export import rows_from_profile, rows_from_search_hits, to_csv_bytes, to_xlsx_bytes
 from tax_platform.search.query import (
@@ -19,6 +21,7 @@ from tax_platform.search.query import (
     penetrate_department,
     search_people,
     suggest_departments,
+    suggest_names,
     suggest_titles,
 )
 from tax_platform.store.anomalies import (
@@ -39,6 +42,7 @@ app = FastAPI(
 
 # Overridable in tests.
 DB_PATH: Path = Path(DEFAULT_DB_PATH)
+STATIC_DIR: Path = Path(__file__).resolve().parent / "static"
 
 
 def _db_path() -> Path:
@@ -55,9 +59,15 @@ def _slim_hit(hit: dict[str, Any]) -> dict[str, Any]:
         "match_reasons": hit.get("match_reasons") or [],
         "supervised_departments": hit.get("supervised_departments") or [],
         "current": hit.get("current"),
+        "unit_category": hit.get("unit_category"),
+        "category_label": hit.get("category_label"),
+        "unit_display": hit.get("unit_display"),
+        "region_display": hit.get("region_display"),
+        "title_display": hit.get("title_display"),
         "appointment_count": hit.get("appointment_count") or 0,
         "appointments": [
             {
+                "bureau_code": ev.get("bureau_code"),
                 "action": ev.get("action"),
                 "title_raw": ev.get("title_raw"),
                 "department_raw": ev.get("department_raw"),
@@ -77,6 +87,38 @@ def health() -> dict[str, Any]:
     return {"ok": True, "db": str(path), "db_exists": path.exists()}
 
 
+def _html(path: Path) -> FileResponse:
+    return FileResponse(
+        path,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@app.get("/")
+def ui_index() -> FileResponse:
+    return _html(STATIC_DIR / "index.html")
+
+
+@app.get("/changes")
+def ui_changes() -> FileResponse:
+    return _html(STATIC_DIR / "changes.html")
+
+
+@app.get("/departments")
+def ui_departments() -> FileResponse:
+    return _html(STATIC_DIR / "departments.html")
+
+
+@app.get("/people/{person_id:path}")
+def ui_person(person_id: str) -> FileResponse:
+    """SPA-style: any /people/... path serves the profile shell."""
+    _ = person_id
+    return _html(STATIC_DIR / "person.html")
+
+
 @app.get("/api/meta/levels")
 def meta_levels() -> dict[str, Any]:
     return {
@@ -87,6 +129,14 @@ def meta_levels() -> dict[str, Any]:
             {"id": "district", "label": "区县局"},
         ]
     }
+
+
+@app.get("/api/meta/units")
+def meta_units(
+    category: str | None = Query(None, description="internal|direct|dispatched"),
+) -> dict[str, Any]:
+    """总局层面「具体地区」：机关司局 + 直属事业单位。"""
+    return {"items": list_sta_units(category)}
 
 
 @app.get("/api/meta/bureaus")
@@ -105,6 +155,45 @@ def meta_bureaus(
             }
             for s in sites
         ]
+    }
+
+
+@app.get("/api/meta/summary")
+def meta_summary() -> dict[str, Any]:
+    """首页概览数字（供 UI 统计条使用）。"""
+    path = _db_path()
+    if not path.exists():
+        return {
+            "persons": 0,
+            "appointment_events": 0,
+            "notices": 0,
+            "bureaus": 0,
+            "departments": 0,
+            "date_span": None,
+        }
+    conn = connect(path)
+    try:
+        persons = conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0]
+        events = conn.execute("SELECT COUNT(*) FROM appointment_events").fetchone()[0]
+        notices = conn.execute("SELECT COUNT(*) FROM notices").fetchone()[0]
+        bureaus = conn.execute("SELECT COUNT(DISTINCT bureau_code) FROM persons").fetchone()[0]
+        departments = conn.execute("SELECT COUNT(*) FROM dept_catalog").fetchone()[0]
+        row = conn.execute(
+            "SELECT MIN(effective_on), MAX(effective_on) FROM appointment_events "
+            "WHERE effective_on IS NOT NULL AND TRIM(effective_on) != ''"
+        ).fetchone()
+        date_span = None
+        if row and row[0]:
+            date_span = {"from": row[0], "to": row[1]}
+    finally:
+        conn.close()
+    return {
+        "persons": persons,
+        "appointment_events": events,
+        "notices": notices,
+        "bureaus": bureaus,
+        "departments": departments,
+        "date_span": date_span,
     }
 
 
@@ -137,6 +226,27 @@ def api_suggest_titles(
     return {"items": items}
 
 
+@app.get("/api/names/suggest")
+def api_suggest_names(
+    q: str = Query(""),
+    level: str | None = Query(None, alias="org_level"),
+    bureau: str | None = Query(None, alias="bureau_code"),
+    limit: int = Query(100, ge=1, le=300),
+) -> dict[str, Any]:
+    conn = connect(_db_path())
+    try:
+        items = suggest_names(
+            q,
+            org_level=level,
+            bureau_code=bureau,
+            limit=limit,
+            conn=conn,
+        )
+    finally:
+        conn.close()
+    return {"items": items}
+
+
 @app.get("/api/search")
 def api_search(
     title: str | None = None,
@@ -144,13 +254,14 @@ def api_search(
     name: str | None = None,
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
+    unit: str | None = Query(None, description="总局单位代码，如 sta:press"),
+    unit_category: str | None = Query(None, description="internal|direct|dispatched|municipality|province|autonomous"),
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
-    """多维组合筛选：层级 / 科室 / 职务 / 姓名 / 时间。"""
-    if not any([(title or "").strip(), (department or "").strip(), (name or "").strip()]):
-        raise HTTPException(status_code=400, detail="需要 title / department / name 至少一个")
+    """多维组合筛选；科室/职务/姓名留空时按地区浏览，全部留空则列出库内人员（分页）。"""
     conn = connect(_db_path())
     try:
         # limit=0 → full match set so total is not truncated by the page size.
@@ -160,6 +271,8 @@ def api_search(
             name=name,
             org_level=level,
             bureau_code=bureau,
+            unit_code=unit,
+            unit_category=unit_category,
             date_from=date_from,
             date_to=date_to,
             limit=0,
@@ -170,22 +283,22 @@ def api_search(
     finally:
         conn.close()
     total = len(all_hits)
-    hits = all_hits[:limit] if limit > 0 else all_hits
-    return {"total": total, "items": [_slim_hit(h) for h in hits]}
+    hits = all_hits[offset : offset + limit] if limit > 0 else all_hits[offset:]
+    return {"total": total, "offset": offset, "limit": limit, "items": [_slim_hit(h) for h in hits]}
 
 
 @app.get("/api/departments/lookup")
 def api_department_lookup(
-    department: str = Query(..., min_length=1),
+    department: str | None = Query(None),
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
     staff_limit: int = Query(30, ge=0, le=200),
 ) -> dict[str, Any]:
-    """科室 → 分管领导 + 任职人员。"""
+    """科室 → 分管领导 + 任职人员。科室可空=按地区浏览全体。"""
     conn = connect(_db_path())
     try:
         result = lookup_department(
-            department,
+            department or "",
             org_level=level,
             bureau_code=bureau,
             staff_limit=staff_limit,
@@ -199,15 +312,15 @@ def api_department_lookup(
 
 @app.get("/api/departments/penetrate")
 def api_department_penetrate(
-    department: str = Query(..., min_length=1),
+    department: str | None = Query(None),
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
 ) -> dict[str, Any]:
-    """层级穿透：科室 → 分管领导 → 单位层级。"""
+    """层级穿透：科室 → 分管领导 → 单位层级。科室可空=按地区浏览全体。"""
     conn = connect(_db_path())
     try:
         result = penetrate_department(
-            department,
+            department or "",
             org_level=level,
             bureau_code=bureau,
             conn=conn,
@@ -273,13 +386,13 @@ def api_export_search(
     name: str | None = None,
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
+    unit: str | None = Query(None, description="总局单位代码，如 sta:press"),
+    unit_category: str | None = Query(None, description="internal|direct|dispatched|municipality|province|autonomous"),
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = Query(200, ge=1, le=2000),
     fmt: Literal["csv", "xlsx"] = Query("csv"),
 ) -> Response:
-    if not any([(title or "").strip(), (department or "").strip(), (name or "").strip()]):
-        raise HTTPException(status_code=400, detail="需要 title / department / name 至少一个")
     conn = connect(_db_path())
     try:
         hits = search_people(
@@ -288,6 +401,8 @@ def api_export_search(
             name=name,
             org_level=level,
             bureau_code=bureau,
+            unit_code=unit,
+            unit_category=unit_category,
             date_from=date_from,
             date_to=date_to,
             limit=limit,
@@ -493,6 +608,11 @@ def api_corrections_list(
         return list_corrections(limit=limit, offset=offset, conn=conn)
     finally:
         conn.close()
+
+
+# Static assets last so /api and HTML routes take precedence.
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 def create_app() -> FastAPI:

@@ -6,10 +6,11 @@
 
 - [x] PR1–3：骨架、任免/领导解析、crawl job
 - [x] PR4：职务/科室基础归一（`tax_platform/normalize/`）
-- [x] PR5（部分）：SQLite 入库、人员履历 + 公告链接（`tax_platform/store/`）
-- [x] 全国站点清单：总局 + 31 省 + 上海 16 区（共 48 个站点）
-- [ ] 地市/区县：从各省信息公开页自动发现（待做）
-- [ ] PR6–9：异常修正、检索页、变动流
+- [x] PR5：SQLite 入库、公告级增量抓取、入库后现任落库（`persons.is_current`）
+- [x] 全国站点清单：总局 + 31 省 + 上海 16 区（共 48 个内置站点）
+- [x] 地市/区县发现骨架：`scripts/discover_city_sites.py` → `output/city_sites_registry.json`
+- [x] PR6–9：异常修正 / 检索 / 穿透导出 / 变动流 — **API + CLI 已完成**
+- [x] 公开前端页（检索 / 履历 / 变动 / 科室穿透）；岗位页未做
 - [ ] PR10：登录/关注（`accounts/`）
 
 ## 站点规模
@@ -17,42 +18,39 @@
 | 层级 | 数量 | 说明 |
 | --- | --- | --- |
 | 总局 | 1 | `sta` |
-| 省局 | 31 | 含直辖市；URL 模板 `{省}.chinatax.gov.cn/xxgk/rsxx/` |
+| 省局 | 31 | 含直辖市 |
 | 上海区县 | 16 | 已手工配置路径前缀 |
-| **合计** | **48** | `--site all` 会遍历全部 |
+| 地市/其他区县 | 0+ | 由 `city_sites_registry.json` 并入 |
+| **内置合计** | **48** | `--site all` 会遍历内置 + registry |
 
 ## 常用命令
 
 ```powershell
 # 检查
 python scripts/smoke_foundation.py
-python tests/test_normalize_and_sites.py
-python tests/test_store.py
+python -m unittest discover -s tests -v
 
-# 抓取（示例：全省/全国）
+# 抓取（增量：跳过库中已有公告 URL；--full 全量重抓）
 python scripts/crawl_leaders.py --site shanghai --output output/shanghai_leaders.json
-python scripts/crawl_appointments.py --site all --output output/national_appointments.json
+python scripts/crawl_appointments.py --site shanghai --db output/tax_hr.db --output output/shanghai_appointments.json
+python scripts/crawl_appointments.py --site all --full --output output/national_appointments.json
 python scripts/crawl_leaders.py --site all --due-only --output output/national_leaders.json
 
-# 入库 + 查看人员
+# 入库 + 现任重算
 python scripts/ingest_crawl.py
-python scripts/list_persons.py                          # 列出库里所有人（摘要）
-python scripts/list_persons.py --full --output output/all_profiles.json   # 导出全员完整履历+公告链接
-python scripts/list_persons.py --bureau pdtax --full    # 只看某个局
+python scripts/recompute_tenure.py
+python scripts/list_persons.py
 
-# 仅调试单个人时用（不用一个个跑）
-python scripts/person_profile.py --name 郑燕 --bureau pdtax
+# 地市发现 / 空分管摸底
+python scripts/discover_city_sites.py --offline-check
+python scripts/discover_city_sites.py --parent shanghai --dry-run
+python scripts/report_empty_oversight.py --db output/tax_hr.db
 
-# 检索 API（PR7–PR9）
+# 检索 UI + API（PR7–PR9）
 pip install -r requirements.txt
 python scripts/run_api.py
+# 前端: http://127.0.0.1:8000/
 # 文档: http://127.0.0.1:8000/docs
-# 示例: /api/search?department=政策法规处&bureau_code=shanghai
-#       /api/departments/penetrate?department=政策法规处
-#       /api/people/shanghai:刘洪波
-#       /api/changes?bureau_code=shanghai&limit=20
-#       /api/posts?bureau_code=shanghai&department=政策法规处
-#       /api/export/search?name=刘洪波&fmt=xlsx
 
 # 变动流 / 岗位 CLI
 python scripts/changes_hr.py feed --bureau shanghai --limit 10
@@ -61,17 +59,18 @@ python scripts/changes_hr.py post --bureau shanghai --department 政策法规处
 # 异常扫描 / 人工修正（PR6）
 python scripts/anomalies_hr.py scan
 python scripts/anomalies_hr.py list --limit 20
-python scripts/anomalies_hr.py fix --type appointment_event --id 123 --set person_name=陈双格 --note "修正人名"
 ```
 
 ## 目录
 
 ```
 tax_platform/
-  config/          站点清单（总局/省/上海区）
+  config/          站点清单 + 省/地市发现
   normalize/       职务、科室归一
-  store/           SQLite 入库与人员履历
-  crawler/         抓取与解析
+  store/           SQLite 入库、现任、异常
+  crawler/         抓取与解析（任免支持增量 skip）
+  search/          检索 / 变动 / 导出
+  web/             FastAPI + static/ 简易检索页
   accounts/        登录与关注（预留）
 scripts/           CLI
 docs/

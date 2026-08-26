@@ -54,7 +54,11 @@ CREATE TABLE IF NOT EXISTS persons (
     bureau_code TEXT NOT NULL,
     gender TEXT,
     title_current TEXT,
-    source_leader_url TEXT
+    source_leader_url TEXT,
+    is_current INTEGER NOT NULL DEFAULT 0,
+    department_current TEXT,
+    current_since TEXT,
+    current_source_url TEXT
 );
 
 -- Hierarchy ↔ department catalog mined from appointments + leader duties.
@@ -117,6 +121,13 @@ CREATE INDEX IF NOT EXISTS idx_anomalies_status ON data_anomalies(status, kind);
 CREATE INDEX IF NOT EXISTS idx_corrections_target ON manual_corrections(target_type, target_id);
 """
 
+_PERSONS_CURRENT_COLUMNS: list[tuple[str, str]] = [
+    ("is_current", "INTEGER NOT NULL DEFAULT 0"),
+    ("department_current", "TEXT"),
+    ("current_since", "TEXT"),
+    ("current_source_url", "TEXT"),
+]
+
 
 def _dedupe_appointment_events(conn: sqlite3.Connection) -> None:
     conn.execute(
@@ -139,6 +150,20 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
             ON appointment_events(source_url, person_name, action, COALESCE(raw_clause, ''))
         """
     )
+    # After migrate: old DBs may lack is_current until ALTER runs.
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_persons_current
+            ON persons(is_current, bureau_code)
+        """
+    )
+
+
+def _migrate_persons_current(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(persons)")}
+    for name, decl in _PERSONS_CURRENT_COLUMNS:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE persons ADD COLUMN {name} {decl}")
 
 
 def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -147,6 +172,7 @@ def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate_persons_current(conn)
     _ensure_indexes(conn)
     conn.commit()
     return conn

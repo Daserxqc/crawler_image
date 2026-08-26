@@ -13,8 +13,14 @@ from tax_platform.normalize.department import (
     org_level_for_bureau,
     split_department_raw,
 )
-from tax_platform.normalize.title import normalize_title
+from tax_platform.normalize.title import normalize_title, org_level_sort_rank, title_sort_rank
 from tax_platform.normalize.person import is_plausible_person_name
+from tax_platform.search.display import (
+    enrich_hit_display,
+    headquarters_org_bucket,
+    headquarters_ranked_post,
+)
+from tax_platform.config.sta_units import unit_keywords
 from tax_platform.store.ingest import get_person_profile, person_id
 from tax_platform.store.schema import connect
 
@@ -26,6 +32,8 @@ def search_people(
     name: str | None = None,
     org_level: str | None = None,
     bureau_code: str | None = None,
+    unit_code: str | None = None,
+    unit_category: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 50,
@@ -43,8 +51,8 @@ def search_people(
     title_q = (title or "").strip()
     dept_q = clean_department_name(department) or (department or "").strip()
     name_q = (name or "").strip()
-    if not title_q and not dept_q and not name_q:
-        raise ValueError("Provide at least one of title / department / name")
+    region_only = not title_q and not dept_q and not name_q
+    cat_q = (unit_category or "").strip()
 
     owns = conn is None
     db = conn or connect()
@@ -80,6 +88,29 @@ def search_people(
         if role:
             item["roles"].add(role)
 
+    browse_level = org_level
+    if region_only and cat_q in {"internal", "direct", "dispatched"} and not browse_level:
+        browse_level = "headquarters"
+
+    # Region browse: list everyone in scope when only地区/单位筛选.
+    if region_only:
+        person_sql = "SELECT bureau_code, name FROM persons WHERE 1=1"
+        person_args: list[Any] = []
+        if bureau_code:
+            person_sql += " AND bureau_code = ?"
+            person_args.append(bureau_code)
+        for row in db.execute(person_sql, person_args):
+            if not _org_level_matches(row["bureau_code"], browse_level):
+                continue
+            remember(row["bureau_code"], row["name"], "region_browse", "person")
+        for row in _iter_leaders(db, bureau_code=bureau_code, org_level=browse_level):
+            remember(
+                row["bureau_code"],
+                row["person_name"],
+                "region_browse",
+                "leader",
+            )
+
     # 0) Name-only / name-primary: pull from persons + leaders + events by name
     if name_q and not title_q and not dept_q:
         person_sql = "SELECT bureau_code, name FROM persons WHERE name LIKE ?"
@@ -88,7 +119,7 @@ def search_people(
             person_sql += " AND bureau_code = ?"
             person_args.append(bureau_code)
         for row in db.execute(person_sql, person_args):
-            if org_level and not _bureau_level_ok(row["bureau_code"], org_level):
+            if not _org_level_matches(row["bureau_code"], org_level):
                 continue
             remember(row["bureau_code"], row["name"], "person_name", "person")
 
@@ -141,9 +172,17 @@ def search_people(
         event_args.append(f"%{name_q}%")
     for row in db.execute(event_sql, event_args):
         bureau = row["bureau_code"]
-        if org_level and not _bureau_level_ok(bureau, org_level):
+        if not _org_level_matches(
+            bureau,
+            org_level,
+            title_raw=row["title_raw"],
+            department_raw=row["department_raw"],
+        ):
             continue
         person = row["person_name"]
+        if region_only:
+            remember(bureau, person, "region_browse", "event")
+            continue
         matched = False
         if name_q and not title_q and not dept_q:
             remember(bureau, person, "event_name", "event")
@@ -196,7 +235,7 @@ def search_people(
                 # name/title hits without in-range events also drop
                 if "supervisor" not in roles:
                     continue
-        results.append(
+        results.append(enrich_hit_display(
             {
                 "id": pid,
                 "name": person,
@@ -210,13 +249,33 @@ def search_people(
                 "appointment_count": len(appointments),
                 "profile": profile,
             }
-        )
+        ))
 
     def _sort_key(r: dict[str, Any]) -> tuple:
-        is_sup = 0 if "supervisor" in r.get("roles", []) else 1
-        return (is_sup, -r["appointment_count"], r["bureau_code"], r["name"])
+        current = r.get("current") or {}
+        title_text = r.get("title_display") or current.get("title") or ""
+        unit_key = r.get("unit_sort_key") or r.get("unit_display") or ""
+        level = r.get("org_level")
+        # 总局内：本机关班子 → 内设 → 直属 → 派出；再按单位、职务
+        hq_bucket = headquarters_org_bucket(r) if level == "headquarters" else 0
+        if level == "headquarters" and hq_bucket == 0:
+            unit_key = ""
+        return (
+            org_level_sort_rank(level),
+            hq_bucket,
+            unit_key,
+            title_sort_rank(title_text),
+            r.get("name") or "",
+            r.get("bureau_code") or "",
+        )
 
     results.sort(key=_sort_key)
+    if unit_code and unit_code not in {"", "sta"}:
+        results = [r for r in results if _hit_matches_unit(r, unit_code)]
+    elif unit_code == "sta":
+        results = [r for r in results if r.get("bureau_code") == "sta" or _hit_matches_unit(r, unit_code)]
+    if cat_q:
+        results = [r for r in results if r.get("unit_category") == cat_q]
     if limit > 0:
         results = results[:limit]
     if owns:
@@ -321,40 +380,55 @@ def departments_for_leader(
 
 
 def lookup_department(
-    department: str,
+    department: str | None = None,
     *,
     org_level: str | None = None,
     bureau_code: str | None = None,
     staff_limit: int = 30,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """一站式：科室 → 分管领导 + 任职人员。"""
+    """一站式：科室 → 分管领导 + 任职人员。
+
+    When *department* is empty, browse staff under the region filters (全体).
+    """
     owns = conn is None
     db = conn or connect()
-    supervisors = leaders_for_department(
-        department,
-        org_level=org_level,
-        bureau_code=bureau_code,
-        conn=db,
-    )
-    people = search_people(
-        department=department,
-        org_level=org_level,
-        bureau_code=bureau_code,
-        limit=0,
-        conn=db,
-    )
-    staff = [p for p in people if "appointee" in p.get("roles", [])]
+    dept_q = (clean_department_name(department) or (department or "")).strip()
+    supervisors: list[dict[str, Any]] = []
+    if dept_q:
+        supervisors = leaders_for_department(
+            dept_q,
+            org_level=org_level,
+            bureau_code=bureau_code,
+            conn=db,
+        )
+        people = search_people(
+            department=dept_q,
+            org_level=org_level,
+            bureau_code=bureau_code,
+            limit=0,
+            conn=db,
+        )
+        staff = [p for p in people if "appointee" in p.get("roles", [])]
+    else:
+        people = search_people(
+            org_level=org_level,
+            bureau_code=bureau_code,
+            limit=0,
+            conn=db,
+        )
+        staff = people
     if staff_limit > 0:
         staff = staff[:staff_limit]
     result = {
-        "department": clean_department_name(department) or department,
+        "department": dept_q or "全部",
         "org_level": org_level,
         "bureau_code": bureau_code,
         "supervising_leaders": supervisors,
         "staff": staff,
         "supervisor_count": len(supervisors),
         "staff_count": len(staff),
+        "browse_all": not bool(dept_q),
     }
     if owns:
         db.close()
@@ -362,20 +436,24 @@ def lookup_department(
 
 
 def penetrate_department(
-    department: str,
+    department: str | None = None,
     *,
     org_level: str | None = None,
     bureau_code: str | None = None,
+    staff_limit: int = 20,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """层级穿透：科室 → 分管领导 → 单位层级信息。"""
+    """层级穿透：科室 → 分管领导 → 单位层级信息。空科室=按地区浏览全体。"""
     owns = conn is None
     db = conn or connect()
+    # Browse-all needs a larger page than single-dept drill-down.
+    dept_q = (department or "").strip()
+    limit = staff_limit if dept_q else max(staff_limit, 100)
     base = lookup_department(
         department,
         org_level=org_level,
         bureau_code=bureau_code,
-        staff_limit=20,
+        staff_limit=limit,
         conn=db,
     )
     upward: list[dict[str, Any]] = []
@@ -432,11 +510,22 @@ def suggest_departments(
         sql += " AND canonical_name LIKE ?"
         args.append(f"%{q}%")
     sql += " ORDER BY source_count DESC, canonical_name LIMIT ?"
-    args.append(limit)
+    args.append(max(limit * 3, limit))
     rows = [dict(r) for r in db.execute(sql, args).fetchall()]
+    # Dedupe identical canonical names (catalog may store same dept under multiple levels).
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for row in rows:
+        name = (row.get("canonical_name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        unique.append(row)
+        if len(unique) >= limit:
+            break
     if owns:
         db.close()
-    return rows
+    return unique
 
 
 def suggest_titles(
@@ -460,9 +549,59 @@ def suggest_titles(
     sql += " ORDER BY source_count DESC, canonical_title LIMIT ?"
     args.append(limit)
     rows = [dict(r) for r in db.execute(sql, args).fetchall()]
+    level_short = {
+        "headquarters": "总局",
+        "province": "省级",
+        "city": "市局",
+        "district": "区县",
+    }
+    title_levels: dict[str, set[str]] = {}
+    for row in rows:
+        title_levels.setdefault(row["canonical_title"], set()).add(row["org_level"])
+    for row in rows:
+        title = row["canonical_title"]
+        if len(title_levels.get(title, set())) > 1:
+            row["display_label"] = f"{title}（{level_short.get(row['org_level'], row['org_level'])}）"
+        else:
+            row["display_label"] = title
     if owns:
         db.close()
     return rows
+
+
+def suggest_names(
+    q: str = "",
+    *,
+    org_level: str | None = None,
+    bureau_code: str | None = None,
+    limit: int = 100,
+    conn: sqlite3.Connection | None = None,
+) -> list[dict[str, Any]]:
+    owns = conn is None
+    db = conn or connect()
+    sql = "SELECT DISTINCT name, bureau_code FROM persons WHERE 1=1"
+    args: list[Any] = []
+    if bureau_code:
+        sql += " AND bureau_code = ?"
+        args.append(bureau_code)
+    if q:
+        sql += " AND name LIKE ?"
+        args.append(f"%{q}%")
+    sql += " ORDER BY name LIMIT ?"
+    args.append(limit)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in db.execute(sql, args):
+        if org_level and not _bureau_level_ok(row["bureau_code"], org_level):
+            continue
+        name = row["name"]
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append({"name": name})
+    if owns:
+        db.close()
+    return out
 
 
 def _level_of(bureau_code: str) -> str:
@@ -474,6 +613,53 @@ def _level_of(bureau_code: str) -> str:
 
 def _bureau_level_ok(bureau_code: str, org_level: str) -> bool:
     return _level_of(bureau_code) == org_level
+
+
+def _has_region_scope(
+    org_level: str | None,
+    bureau_code: str | None,
+    unit_code: str | None,
+    unit_category: str | None = None,
+) -> bool:
+    return bool(
+        (org_level or "").strip()
+        or (bureau_code or "").strip()
+        or (unit_code or "").strip()
+        or (unit_category or "").strip()
+    )
+
+
+def _hit_matches_unit(hit: dict[str, Any], unit_code: str) -> bool:
+    keywords = unit_keywords(unit_code)
+    if not keywords:
+        return True
+    chunks: list[str] = []
+    current = hit.get("current") or {}
+    chunks.append(str(current.get("department") or ""))
+    chunks.append(str(current.get("title") or ""))
+    chunks.append(str(current.get("unit") or ""))
+    for row in hit.get("appointments") or []:
+        chunks.append(str(row.get("department_raw") or ""))
+        chunks.append(str(row.get("title_raw") or ""))
+        chunks.append(str(row.get("bureau_name") or ""))
+    text = "".join(chunks)
+    return any(k in text for k in keywords)
+
+
+def _org_level_matches(
+    bureau_code: str,
+    org_level: str | None,
+    *,
+    title_raw: str | None = None,
+    department_raw: str | None = None,
+) -> bool:
+    if not org_level:
+        return True
+    if _bureau_level_ok(bureau_code, org_level):
+        return True
+    if org_level == "headquarters" and headquarters_ranked_post(title_raw, department_raw):
+        return True
+    return False
 
 
 def _title_matches(raw: str | None, query: str) -> bool:
@@ -504,16 +690,33 @@ def _dept_matches(raw: str, query: str, *, org_level: str | None = None) -> bool
 def _person_appointments(
     db: sqlite3.Connection, bureau_code: str, name: str
 ) -> list[dict[str, Any]]:
+    """Load appointment rows for a person.
+
+    Prefer same-bureau matches; if none, fall back to **all** events with the
+    same person name (leaders often appear under one bureau while notices were
+    ingested under another).
+    """
     rows = db.execute(
         """
-        SELECT action, title_raw, department_raw, bureau_name, effective_on,
-               notice_title, source_url, raw_clause
+        SELECT bureau_code, action, title_raw, department_raw, bureau_name,
+               effective_on, notice_title, source_url, raw_clause
         FROM appointment_events
         WHERE bureau_code = ? AND person_name = ?
         ORDER BY COALESCE(effective_on, '') DESC, id DESC
         """,
         (bureau_code, name),
     ).fetchall()
+    if not rows:
+        rows = db.execute(
+            """
+            SELECT bureau_code, action, title_raw, department_raw, bureau_name,
+                   effective_on, notice_title, source_url, raw_clause
+            FROM appointment_events
+            WHERE person_name = ?
+            ORDER BY COALESCE(effective_on, '') DESC, id DESC
+            """,
+            (name,),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -558,14 +761,20 @@ def _iter_leaders(
         args.append(bureau_code)
     rows: list[dict[str, Any]] = []
     for row in db.execute(sql, args):
-        if org_level and not _bureau_level_ok(row["bureau_code"], org_level):
-            continue
-        if not is_plausible_person_name(row["person_name"]):
-            continue
         try:
             deps = json.loads(row["departments_json"] or "[]")
         except json.JSONDecodeError:
             deps = []
+        dept_text = " ".join(str(d) for d in deps)
+        if not _org_level_matches(
+            row["bureau_code"],
+            org_level,
+            title_raw=row["title_raw"],
+            department_raw=dept_text,
+        ):
+            continue
+        if not is_plausible_person_name(row["person_name"]):
+            continue
         rows.append(
             {
                 "bureau_code": row["bureau_code"],

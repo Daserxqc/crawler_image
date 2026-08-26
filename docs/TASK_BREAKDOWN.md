@@ -65,28 +65,30 @@
 12. 科室层级归一化（处/科/司/局/所/分局）
 13. 层级-科室映射表（市局处 ≠ 区局科）
 
-### PR5 — 变动识别与增量（进行中）
+### PR5 — 变动识别与增量
 14. 变动类型判定（新任职/调任/晋升/免职/退休/试用期满转正等）— `normalize/change.py`
-15. 增量入库与现任状态重算 — `store/tenure.py`（履历推导现任）
-16. 履历时间线更新触发 — 随 `get_person_profile` / 重抽任免生效
+15. 增量入库与现任状态重算 — 公告级 skip（`appointment_job` + `--db`）、`persons.is_current` 落库（`tenure.recompute_*`）
+16. 履历时间线更新触发 — ingest / `scripts/recompute_tenure.py` / 重抽任免后重算
 
-### PR9 — 公开变动监测
+### PR9 — 公开变动监测（API 完成；前端未做）
 23. 全站变动动态流 — `GET /api/changes`、`scripts/changes_hr.py feed`
 24. 岗位现任/历任档案 — `GET /api/posts`、`scripts/changes_hr.py post`
 
-### 全国站点扩展（与 PR4/5 并行）
+### 全国站点扩展
 - 总局 + 31 省级税务局 URL 模板（`config/sites_provinces.py`）
-- 地市/区县局：后续从各省「信息公开」页自动发现（上海 16 区为样板）
+- 地市/区县发现骨架：`config/city_discovery.py`、`scripts/discover_city_sites.py` → `output/city_sites_registry.json`（并入 `sites.ALL_SITES`）
+- 空分管摸底：`scripts/report_empty_oversight.py`
+- 地市/区县：registry 待持续填充；上海 16 区仍为手工样板
 
-### PR6 — 异常与人工修正
+### PR6 — 异常与人工修正（API 完成；管理 UI 未做）
 17. 异常识别（同名、缺字段、日期异常、冲突、解析失败）— `store/anomalies.py`、`POST /api/anomalies/scan`
 18. 人工修正入口与修正回写钩子 — `POST /api/corrections`、`scripts/anomalies_hr.py`
 
-### PR7 — 检索核心
+### PR7 — 检索核心（API 完成；前端未做）
 19. 多维组合筛选（层级/科室/职务/姓名/时间）— `GET /api/search`、`scripts/search_hr.py`
 20. 层级-科室联动下拉数据接口 — `GET /api/departments/suggest`、`/api/titles/suggest`
 
-### PR8 — 关联穿透与展示
+### PR8 — 关联穿透与展示（API 完成；前端未做）
 21. 科室↔分管领导联动、向上穿透 — `/api/departments/lookup`、`/api/departments/penetrate`
 22. 履历倒序、公告溯源链接、列表/详情、Excel 导出 — `/api/people/{id}`、`/api/export/*`
 

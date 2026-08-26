@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 
 from tax_platform.crawler.http_client import extract_meta_refresh_url, resolve_list_child_url
 from tax_platform.models.entities import LeaderDuty
+from tax_platform.normalize.person import is_plausible_person_name
 
 # 2–4汉字, or spaced forms, or minority names with ·
 NAME = (
@@ -83,6 +84,27 @@ SKIP_PSEUDO_NAMES = (
     "领导简介",
     "概况信息",
     "新闻动态",
+    "专题专栏",
+    "主要职能",
+    "内设机构",
+    "发票查询",
+    "总局概况",
+    "所得税司",
+    "教育中心",
+    "新浪微博",
+    "新闻发布",
+    "查看更多",
+    "派出机构",
+    "直属单位",
+    "直属机构",
+    "访问统计",
+    "重要活动",
+    "社保",
+    "信息公开",
+    "人事司",
+    "办公厅",
+    "机关党委",
+    "稽查局",
     "政策文件",
     "纳税服务",
     "互动交流",
@@ -156,18 +178,20 @@ def parse_leader_intro(html: str, source_url: str, bureau_code: str) -> list[Lea
 
     root = _main_content_root(soup)
     text = _visible_text(root)
-    if len(bios) < 2:
-        bios = _merge_duties(
-            bios,
-            _parse_multi_leader_text(text, source_url, bureau_code),
-            _parse_heading_bio_profiles(text, source_url, bureau_code),
-            _parse_inline_name_bureau_titles(text, source_url, bureau_code),
-            _parse_alternating_name_title_text(text, source_url, bureau_code),
-            _parse_sequential_profiles(text, source_url, bureau_code),
-        )
+    # Always parse the focused bio pane too. Hub/detail pages often list every
+    # leader in a sidebar (>=2 stubs) while only the selected person has 分管.
+    bios = _merge_duties(
+        bios,
+        _parse_guangdong_leader_blocks(soup, source_url, bureau_code),
+        _parse_multi_leader_text(text, source_url, bureau_code),
+        _parse_heading_bio_profiles(text, source_url, bureau_code),
+        _parse_inline_name_bureau_titles(text, source_url, bureau_code),
+        _parse_alternating_name_title_text(text, source_url, bureau_code),
+        _parse_sequential_profiles(text, source_url, bureau_code),
+    )
 
     ldjj = soup.select_one(".ldjj2022")
-    if ldjj is not None and len(bios) < 2:
+    if ldjj is not None:
         duty = _parse_ldjj2022(ldjj, source_url, bureau_code)
         if duty is not None:
             bios = _merge_duties(bios, [duty])
@@ -175,8 +199,6 @@ def parse_leader_intro(html: str, source_url: str, bureau_code: str) -> list[Lea
     # Overlay bio details onto sidebar stubs (sidebar order preserved).
     if sidebar:
         return _overlay_sidebar_with_bios(sidebar, bios)
-    if len(bios) >= 2:
-        return bios
     if bios:
         return bios
     return []
@@ -274,6 +296,8 @@ def _person_name_links_in(
             continue
         if not PERSON_NAME_ONLY_RE.fullmatch(name) or not (2 <= len(name) <= 8):
             continue
+        if not is_plausible_person_name(name):
+            continue
         # Require leader-ish href (column / article / ldjj) OR site-relative path.
         if not (
             LEADER_COL_HREF_RE.search(href)
@@ -315,15 +339,27 @@ def _person_name_links_in(
 
 
 def _merge_duties(*groups: list[LeaderDuty]) -> list[LeaderDuty]:
-    seen: set[str] = set()
-    out: list[LeaderDuty] = []
+    """Merge duties by person name, keeping the richer record (more oversight deps)."""
+    by_name: dict[str, LeaderDuty] = {}
     for group in groups:
         for duty in group:
-            if duty.person_name in seen:
+            name = duty.person_name
+            prev = by_name.get(name)
+            if prev is None:
+                by_name[name] = duty
                 continue
-            seen.add(duty.person_name)
-            out.append(duty)
-    return out
+            if _duty_richness(duty) > _duty_richness(prev):
+                by_name[name] = duty
+    return list(by_name.values())
+
+
+def _duty_richness(duty: LeaderDuty) -> tuple[int, int, int]:
+    deps = duty.departments_raw or []
+    return (
+        len(deps),
+        1 if (duty.duty_summary or "").strip() else 0,
+        len(duty.title_raw or ""),
+    )
 
 
 def leader_page_targets(html: str, hub_url: str) -> list[str]:
@@ -370,14 +406,18 @@ def leader_page_targets(html: str, hub_url: str) -> list[str]:
 
     for anchor in soup.select("a[href]"):
         title = re.sub(r"[\s\u3000\u2002\u2003]+", "", anchor.get_text(" ", strip=True))
+        title_attr = re.sub(r"[\s\u3000\u2002\u2003]+", "", str(anchor.get("title") or ""))
         href = str(anchor.get("href") or "")
         if not href or href.startswith("javascript:") or title in SKIP_LINK_TEXT:
             continue
-        if not _is_person_label(title):
+        personish = _is_person_label(title) or _is_person_label(title_attr)
+        ldzl_detail = bool(re.search(r"/(?:ldzl|ldjj|ldjs)/.+/content_", href, re.I))
+        if not personish and not ldzl_detail:
             continue
         # Person-named leader articles / columns only.
         if (
-            ARTICLE_HREF_RE.search(href)
+            ldzl_detail
+            or ARTICLE_HREF_RE.search(href)
             or LEADER_COL_HREF_RE.search(href)
             or re.search(r"/(?:ldjj|ldzl|ldjs|ldxx\w*|leaderlist)/", href, re.I)
         ):
@@ -635,6 +675,70 @@ def _duty_from_name_title(
     )
 
 
+def _parse_guangdong_leader_blocks(
+    soup: BeautifulSoup, source_url: str, bureau_code: str
+) -> list[LeaderDuty]:
+    """Guangdong ``leader_content_newType`` / ``leader_content_newType_con`` bios."""
+    blocks = soup.select("div.leader_content_newType")
+    if not blocks:
+        return []
+    duty_summary = None
+    departments: list[str] = []
+    for block in blocks:
+        label = block.get_text(" ", strip=True)
+        con = block.find_next_sibling("div", class_="leader_content_newType_con")
+        body = con.get_text(" ", strip=True) if con else ""
+        if "分管" in label or "分管" in body:
+            duty_summary = "分管工作"
+            departments = _split_departments(f"{label}{body}")
+        elif "主持" in label or "主持" in body:
+            duty_summary = "主持全面工作"
+    if duty_summary is None and not departments:
+        return []
+
+    # Name from article title / breadcrumb / first bio sentence.
+    name = ""
+    for sel in ("meta[name='ArticleTitle']", "h1", ".leader_name", ".content_title", "title"):
+        node = soup.select_one(sel)
+        if node is None:
+            continue
+        raw = node.get("content") if node.name == "meta" else node.get_text(" ", strip=True)
+        cleaned = _clean_name(str(raw or "").split("_")[0].split("-")[0])
+        # Drop site suffix noise.
+        cleaned = re.split(r"国家税务|税务局|领导", cleaned)[0]
+        if PERSON_NAME_ONLY_RE.fullmatch(cleaned) and 2 <= len(cleaned) <= 8:
+            name = cleaned
+            break
+    if not name:
+        text = _visible_text(soup)
+        match = re.search(rf"(?P<name>{NAME})[，,]男", text)
+        if match:
+            name = _clean_name(match.group("name"))
+    if not name or not PERSON_NAME_ONLY_RE.fullmatch(name):
+        return []
+
+    title = ""
+    title_match = re.search(
+        rf"{re.escape(name)}[，,]男[，,]汉族[，,](?P<title>[^。]{{4,80}})",
+        _visible_text(soup),
+    )
+    if title_match:
+        title = _normalize_title(title_match.group("title"))
+
+    return [
+        LeaderDuty(
+            person_name=name,
+            gender="男" if "男" in _visible_text(soup)[:200] else None,
+            ethnicity=None,
+            title_raw=title,
+            duty_summary=duty_summary,
+            departments_raw=departments,
+            source_url=source_url,
+            bureau_code=bureau_code,
+        )
+    ]
+
+
 def _parse_ldjj2022(node, source_url: str, bureau_code: str) -> LeaderDuty | None:
     profile_node = node.select_one(".ldjjjj")
     if profile_node is None:
@@ -788,7 +892,10 @@ def _visible_text(node) -> str:
 
 
 def _clean_name(name: str) -> str:
-    return re.sub(r"[\s\u3000\u2002\u2003\u200b]+", "", name or "")
+    text = re.sub(r"[\s\u3000\u2002\u2003\u200b]+", "", name or "")
+    # Hub cards often use 「江武峰（江武峰）」.
+    text = re.sub(r"[（(][^）)]*[）)]", "", text)
+    return text
 
 
 def _trim_chrome(text: str) -> str:
@@ -816,7 +923,22 @@ def _split_departments(block: str) -> list[str]:
         if index != -1:
             chunk = chunk[index + len(marker) :]
             break
+    # Stop before 联系单位 / 联系… blocks (common on province bios).
+    for stop in ("联系单位", "联系国家", "联系省", "联系市", "联系区", "，联系", ",联系", "联系"):
+        cut = chunk.find(stop)
+        if cut != -1 and cut > 0:
+            chunk = chunk[:cut]
+            break
     chunk = re.sub(r"^[\s：:，,]*分管", "", chunk.strip())
     chunk = chunk.strip("：:。；;，, ")
     parts = [part.strip("。；;，, ") for part in re.split(r"[、]", chunk)]
-    return [part for part in parts if part and part not in {"分管工作", "主持全面工作"}]
+    out: list[str] = []
+    for part in parts:
+        if not part or part in {"分管工作", "主持全面工作"}:
+            continue
+        if "联系" in part:
+            part = part.split("联系", 1)[0].strip("，,；; ")
+        if not part or part.startswith("联系"):
+            continue
+        out.append(part)
+    return out

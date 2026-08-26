@@ -3,6 +3,7 @@ from tax_platform.store.ingest import (
     get_person_profile,
     ingest_appointment_results,
     ingest_leader_results,
+    known_notice_urls,
     list_persons,
     person_id,
 )
@@ -19,6 +20,7 @@ from tax_platform.store.anomalies import (
     list_corrections,
     scan_anomalies,
 )
+from tax_platform.store.tenure import recompute_persons
 
 __all__ = [
     "apply_correction",
@@ -29,11 +31,13 @@ __all__ = [
     "ignore_anomaly",
     "ingest_appointment_results",
     "ingest_leader_results",
+    "known_notice_urls",
     "list_anomalies",
     "list_corrections",
     "list_departments_for_level",
     "list_persons",
     "person_id",
     "rebuild_catalogs",
+    "recompute_persons",
     "scan_anomalies",
 ]

@@ -108,6 +108,16 @@ class SearchFilterTests(unittest.TestCase):
         self.assertGreaterEqual(body2["total"], 2)
         self.assertEqual(len(body2["items"]), 1)
 
+        r3 = self.client.get(
+            "/api/search",
+            params={"department": "政策法规处", "bureau_code": "shanghai", "limit": 1, "offset": 1},
+        )
+        self.assertEqual(r3.status_code, 200)
+        body3 = r3.json()
+        self.assertEqual(body3["offset"], 1)
+        self.assertEqual(len(body3["items"]), 1)
+        self.assertNotEqual(body2["items"][0]["name"], body3["items"][0]["name"])
+
         p = self.client.get(
             "/api/departments/penetrate",
             params={"department": "政策法规处", "bureau_code": "shanghai"},
@@ -135,6 +145,33 @@ class SearchFilterTests(unittest.TestCase):
         hits = search_people(name="测试甲", conn=self.conn)
         raw = to_csv_bytes(rows_from_search_hits(hits))
         self.assertTrue(raw.startswith(b"\xef\xbb\xbf") or "姓名".encode("utf-8") in raw)
+
+    def test_appointment_fallback_by_name_across_bureau(self) -> None:
+        """Leader under bureau A with events only under bureau B still gets records."""
+        from tax_platform.search.query import _person_appointments
+
+        self.conn.execute(
+            """
+            INSERT INTO appointment_events (
+                notice_id, bureau_code, person_name, action, department_raw, title_raw,
+                effective_on, notice_title, source_url, raw_clause
+            ) VALUES (1, 'sta', '跨局甲', 'appoint', '政策法规司', '副司长',
+                      '2024-01-01', '任免', 'https://example.com/sta', '跨局甲任政策法规司副司长')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO persons (id, name, bureau_code, title_current)
+            VALUES ('shanghai:跨局甲', '跨局甲', 'shanghai', NULL)
+            """
+        )
+        self.conn.commit()
+        rows = _person_appointments(self.conn, "shanghai", "跨局甲")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["bureau_code"], "sta")
+        hits = search_people(name="跨局甲", bureau_code="shanghai", conn=self.conn)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["appointment_count"], 1)
 
 
 if __name__ == "__main__":

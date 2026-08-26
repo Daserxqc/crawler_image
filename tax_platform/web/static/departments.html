@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>科室穿透 · 税局人事检索</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css?v=20" />
+</head>
+<body class="app" data-page="departments">
+  <header class="app-header" id="app-header"></header>
+
+  <main class="app-main">
+    <div class="shell">
+      <section class="panel-card" aria-labelledby="dept-heading">
+        <h2 class="panel-heading" id="dept-heading">科室筛选</h2>
+        <p class="muted" style="margin: -0.5rem 0 1rem;">源站未公布分管时，分管领导侧会显示「暂无」。可先选地区后直接查询全体；选科室则做穿透。</p>
+        <form class="filter-grid" id="dept-form" autocomplete="off">
+          <div class="field">
+            <label for="org_level">地区层级</label>
+            <select id="org_level" name="org_level">
+              <option value="">全部层级</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="region_category">地区分类</label>
+            <select id="region_category" name="region_category">
+              <option value="">全部分类</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="bureau_code">具体地区</label>
+            <select id="bureau_code" name="bureau_code">
+              <option value="">全部地区</option>
+            </select>
+          </div>
+          <div class="field field-span-2">
+            <label for="department">工作科室</label>
+            <select id="department" name="department">
+              <option value="">全部科室</option>
+            </select>
+          </div>
+          <div class="filter-actions">
+            <button class="btn" type="submit" id="dept-btn">查询</button>
+            <button class="btn secondary" type="button" id="reset-btn">重置</button>
+          </div>
+        </form>
+      </section>
+
+      <div id="out"></div>
+      <div class="status" id="status" hidden></div>
+    </div>
+  </main>
+
+  <script src="/static/js/common.js?v=11"></script>
+  <script src="/static/js/departments.js?v=3"></script>
+</body>
+</html>

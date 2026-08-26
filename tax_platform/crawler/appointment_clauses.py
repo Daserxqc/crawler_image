@@ -8,7 +8,13 @@ from tax_platform.models.entities import AppointmentEvent, NoticeMeta
 from tax_platform.normalize.person import SKIP_NAMES, is_plausible_person_name
 
 NAME_RE = r"[\u4e00-\u9fa5·]{2,4}"
+# Longer suffixes first so 「常务副局长」wins over 「副局长」.
 TITLE_SUFFIXES = (
+    "常务副局长",
+    "副局长",
+    "局长",
+    "副司长",
+    "司长",
     "副科长",
     "科长",
     "副所长",
@@ -17,15 +23,13 @@ TITLE_SUFFIXES = (
     "处长",
     "副主任",
     "主任",
-    "常务副局长",
-    "副局长",
-    "局长",
     "副校长",
     "校长",
+    "纪检组组长",
     "副组长",
     "组长",
     "党委书记",
-    "纪检组组长",
+    "党委委员",
     "总法律顾问",
     "总会计师",
     "总经济师",
@@ -33,10 +37,30 @@ TITLE_SUFFIXES = (
     "一级巡视员",
     "二级巡视员",
     "巡视员",
+    "一级高级主办",
+    "二级高级主办",
+    "三级高级主办",
+    "四级高级主办",
+    "一级主办",
+    "二级主办",
+    "三级主办",
+    "四级主办",
+    "高级主办",
+    "主办",
+    "一级调研员",
+    "二级调研员",
+    "三级调研员",
+    "四级调研员",
+    "调研员",
+)
+# Trailing concurrent ranks after顿号, e.g. 副局长、二级高级主办
+_RANK_ONLY_RE = re.compile(
+    r"^(?:[一二三四]级)?(?:高级)?(?:主办|调研员|巡视员)$"
 )
 # Optional leading 「任命 / 任命：」 so 「任命陈双格为…」 does not swallow 命 into the name.
+# (?<![行]) avoids matching 「行为税」里的「为」误当成「X为Y」任命句式。
 APPOINT_AS_RE = re.compile(
-    rf"(?:任命[:：]?)*(?P<name>{NAME_RE})为(?P<post>[^；。;，,]+)"
+    rf"(?:任命[:：]?)*(?P<name>{NAME_RE})(?<![行])为(?P<post>[^；。;，,]+)"
 )
 # Shanghai-style: "赵健健任保税区税务分局法制科副科长"
 APPOINT_RE = re.compile(rf"(?P<name>{NAME_RE})任(?P<post>[^；。;]+)")
@@ -97,7 +121,7 @@ def _events_from_clause(notice: NoticeMeta, clause: str) -> list[AppointmentEven
         if not _looks_like_post(post):
             continue
         bureau, department, title = split_post(post)
-        if not (title or department or "税务" in post):
+        if not (title or department):
             continue
         out.append(
             _event(
@@ -149,27 +173,45 @@ def split_post(post: str) -> tuple[str | None, str | None, str | None]:
     # Drop trailing rank / probation fragments left after imperfect splits.
     text = re.split(r"(?:，|,)?(?:任职)?试用期", text)[0].strip("，, ")
     # Drop rank notes like （副处长级）; keep （装备和采购处） by only stripping *级*.
-    text_for_title = re.sub(r"[（(][^）)]*级[）)]", "", text)
+    text = re.sub(r"[（(][^）)]*级[）)]", "", text)
+    # Peel trailing concurrent ranks: 副局长、二级高级主办
+    parts = [p for p in text.split("、") if p]
+    ranks: list[str] = []
+    while len(parts) > 1 and _RANK_ONLY_RE.fullmatch(parts[-1]):
+        ranks.insert(0, parts.pop())
+    text_for_title = "、".join(parts) if parts else text
     title = _match_suffix(text_for_title)
+    if not title and ranks:
+        title = ranks[0]
+        ranks = ranks[1:]
+        text_for_title = ""
     remainder = text_for_title[: -len(title)] if title else text_for_title
+    if title and ranks:
+        title = f"{title}、{'、'.join(ranks)}"
     # If parentheses still wrap a department alias, keep inner dept when useful.
-    remainder = remainder.strip("（）() ")
+    remainder = remainder.strip("（）() 、")
     bureau = None
     department = remainder or None
-    for token in ("税务分局", "税务局", "干部学校"):
+    for token in ("税务分局", "税务局", "干部学校", "稽查局"):
         index = remainder.rfind(token) if remainder else -1
         if index != -1:
             end = index + len(token)
             bureau = remainder[:end]
             department = remainder[end:] or None
             break
+    # 总局本机关：国家税务总局人事司司长 → unit=总局, dept=人事司, title=司长
+    if bureau is None and remainder and remainder.startswith("国家税务总局"):
+        bureau = "国家税务总局"
+        department = remainder[len("国家税务总局") :] or None
     if department:
-        department = department.strip("（）() ，,") or None
+        department = department.strip("（）() ，,、") or None
         # Reject department values that are clearly title/probation residue.
         if department and any(
-            tok in department
-            for tok in ("试用期", "任命", "免去", "通知", "主办", "调研员", "巡视员")
+            tok in department for tok in ("试用期", "任命", "免去", "通知")
         ):
+            department = None
+        # Pure rank fragments should not be kept as department.
+        if department and _RANK_ONLY_RE.fullmatch(department):
             department = None
     return bureau, department, title
 
