@@ -18,7 +18,8 @@
   const methodTabs = qsa(".login-method");
 
   const params = new URLSearchParams(window.location.search);
-  const next = params.get("next") || "/watches";
+  const next = params.get("next") || "/account";
+  const rebind = params.get("rebind") === "1";
   const RESEND_SECONDS = 60;
 
   let channel = "email"; // email | phone
@@ -182,7 +183,8 @@
         useChannel === "phone"
           ? { channel: "phone", account, phone: account, code }
           : { channel: "email", account, email: account, code };
-      await apiPost("/api/auth/verify", body);      setStatus(codeStatus, "登录成功，正在跳转…", "ok");
+      await apiPost("/api/auth/verify", body);
+      setStatus(codeStatus, rebind ? "验证成功，正在跳转…" : "登录成功，正在跳转…", "ok");
       stopResendTimer();
       window.location.href = next;
     } catch (err) {
@@ -227,11 +229,23 @@
     showPanel("account");
   });
 
-  fetchAuthState()
-    .then((me) => {
-      if (me?.authenticated) window.location.replace(next);
-    })
-    .catch(() => {});
+  const initPage = async () => {
+    if (rebind) {
+      await apiPost("/api/auth/logout", {}).catch(() => {});
+      const heading = qs("#login-heading");
+      const lead = qs(".login-lead");
+      if (heading) heading.textContent = "换绑账号";
+      if (lead) {
+        lead.textContent =
+          "请先退出当前账号，再用新的手机号或邮箱完成验证。关注记录保留在原账号，不会自动迁移。";
+      }
+      return;
+    }
+    const me = await fetchAuthState(true);
+    if (me?.authenticated) window.location.replace(next);
+  };
+
+  initPage().catch(() => {});
 
   applyChannel("email");
   showPanel("account");

@@ -57,6 +57,47 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
+function formatLocalDateTime(iso) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatLocalDate(iso) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso).slice(0, 10);
+  return date.toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
+async function apiPatch(path, body = {}) {
+  const res = await fetch(path, {
+    method: "PATCH",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    const msg = typeof detail === "string" ? detail : res.statusText || "请求失败";
+    throw new Error(msg);
+  }
+  return data;
+}
+
 const LEVEL_LABELS = {
   headquarters: "总局层面",
   province: "省局层面",
@@ -99,6 +140,7 @@ const PAGE_TABS = [
   { id: "search", href: "/", label: "人员查询" },
   { id: "changes", href: "/changes", label: "变动流" },
   { id: "departments", href: "/departments", label: "科室穿透" },
+  { id: "posts", href: "/posts", label: "岗位历任" },
 ];
 
 function levelLabel(id) {
@@ -199,18 +241,69 @@ function maskEmailClient(email) {
 
 function displayUserLabel(user) {
   if (!user) return "我的账号";
-  if (user.display_name || user.account_masked) {
-    return user.display_name || user.account_masked;
+  return resolveUserDisplay(user).displayName;
+}
+
+function resolveUserDisplay(user) {
+  if (!user) {
+    return { displayName: "已登录", defaultNick: "", customNick: "", masked: "—", method: "" };
   }
-  // Fallback if an older API still returns plaintext.
-  if (user.phone) return maskPhoneClient(user.phone);
-  if (user.email) return maskEmailClient(user.email);
-  if (user.account) {
-    return String(user.account).includes("@")
-      ? maskEmailClient(user.account)
-      : maskPhoneClient(user.account);
+  const customNick = (user.nickname || "").trim();
+  const masked = user.account_masked || "—";
+  const method = user.login_method || (user.channel === "phone" ? "手机号" : "邮箱");
+  let defaultNick = (user.default_nickname || "").trim();
+  if (!defaultNick && !customNick) {
+    const id = Number(user.id) || 0;
+    if (user.channel === "phone" || method.includes("手机")) {
+      const digits = String(masked).replace(/\D/g, "");
+      defaultNick =
+        digits.length >= 4 ? `用户${digits.slice(-4)}` : `用户${String(id).padStart(4, "0")}`;
+    } else {
+      defaultNick = `税务用户${String(id).padStart(4, "0")}`;
+    }
   }
-  return "我的账号";
+  const displayName = customNick || defaultNick || masked || "已登录";
+  return { displayName, defaultNick, customNick, masked, method };
+}
+
+function setText(sel, value) {
+  const el = qs(sel);
+  if (el) el.textContent = value ?? "";
+}
+
+function applyUserAvatar(el, user) {
+  if (!el) return;
+  el.classList.remove("is-person-icon");
+  const { displayName, customNick, defaultNick, masked, method } = resolveUserDisplay(user);
+  const label = customNick || defaultNick || displayName;
+  if (label && !String(label).includes("*")) {
+    el.textContent = label.slice(0, 1);
+    return;
+  }
+  const digits = String(masked).replace(/\D/g, "");
+  if ((user?.channel || "") === "phone" || method.includes("手机")) {
+    if (digits.length >= 4) {
+      el.textContent = digits.slice(-4);
+      return;
+    }
+  }
+  el.textContent = "";
+  el.classList.add("is-person-icon");
+}
+
+function userAvatarText(user) {
+  const { displayName, customNick, defaultNick, masked, method } = resolveUserDisplay(user);
+  const label = customNick || defaultNick || displayName;
+  if (label && !String(label).includes("*")) return label.slice(0, 1);
+  const digits = String(masked).replace(/\D/g, "");
+  if ((user?.channel || "") === "phone" || method.includes("手机")) {
+    if (digits.length >= 4) return digits.slice(-4);
+  }
+  return "";
+}
+
+function userAvatarIsIcon(user) {
+  return !userAvatarText(user);
 }
 
 function mountAppHeader(activeId, authState) {
@@ -225,7 +318,10 @@ function mountAppHeader(activeId, authState) {
   let authHtml = "";
   if (authState?.authenticated) {
     const label = displayUserLabel(authState.user);
-    const initial = (authState.user?.login_method || "").includes("手机") ? "手" : "我";
+    const avatarClass = userAvatarIsIcon(authState.user) ? " user-menu-avatar is-person-icon" : " user-menu-avatar";
+    const avatarInner = userAvatarIsIcon(authState.user)
+      ? ""
+      : escapeHtml(userAvatarText(authState.user));
     authHtml = `
       <div class="user-menu" id="user-menu">
         <button
@@ -236,13 +332,13 @@ function mountAppHeader(activeId, authState) {
           aria-expanded="false"
           aria-label="账号菜单，当前 ${escapeHtml(label)}"
         >
-          <span class="user-menu-avatar" aria-hidden="true">${escapeHtml(initial)}</span>
+          <span class="${avatarClass.trim()}" aria-hidden="true">${avatarInner}</span>
           <span class="user-menu-label">${escapeHtml(label)}</span>
           <span class="user-menu-caret" aria-hidden="true">▾</span>
         </button>
         <div class="user-menu-panel" id="user-menu-panel" role="menu" hidden>
           <a role="menuitem" href="/account">个人中心</a>
-          <a role="menuitem" href="/watches">我的关注</a>
+          <a role="menuitem" href="/account#watches">我的关注</a>
           <button type="button" role="menuitem" id="logout-btn">退出登录</button>
         </div>
       </div>

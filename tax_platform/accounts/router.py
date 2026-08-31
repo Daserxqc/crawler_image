@@ -73,8 +73,8 @@ def ui_login() -> FileResponse:
 
 
 @router.get("/watches")
-def ui_watches() -> FileResponse:
-    return _html("watches.html")
+def ui_watches() -> RedirectResponse:
+    return RedirectResponse(url="/account#watches", status_code=302)
 
 
 @router.get("/account")
@@ -132,6 +132,39 @@ def api_logout(request: Request, response: Response) -> dict[str, Any]:
         conn.close()
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"ok": True}
+
+
+@router.patch("/api/auth/profile")
+def api_update_profile(
+    request: Request,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    return _update_profile(request, payload)
+
+
+@router.post("/api/auth/profile")
+def api_update_profile_post(
+    request: Request,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """POST alias for clients or proxies that block PATCH."""
+    return _update_profile(request, payload)
+
+
+def _update_profile(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    user = _require_user(request)
+    conn = _db()
+    try:
+        updated = auth.update_nickname(
+            int(user["id"]),
+            str(payload.get("nickname") or ""),
+            conn=conn,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
+    return {"ok": True, "user": updated}
 
 
 @router.get("/api/watches")
@@ -218,7 +251,8 @@ def api_outbox(
     try:
         rows = conn.execute(
             """
-            SELECT id, subject, status, created_at, sent_at, error, event_ids_json
+            SELECT id, subject, status, created_at, sent_at, error, event_ids_json,
+                   substr(body_text, 1, 320) AS body_preview
             FROM email_outbox
             WHERE user_id = ?
             ORDER BY id DESC

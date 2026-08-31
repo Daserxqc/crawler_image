@@ -174,5 +174,19 @@ def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _migrate_persons_current(conn)
     _ensure_indexes(conn)
+    from tax_platform.config.sites import ALL_SITES
+    from tax_platform.store.identity import ensure_identity_schema, sync_person_identities
+    from tax_platform.store.org_units import ensure_org_units_schema, sync_org_units_from_sites
+    from tax_platform.store.posts import ensure_posts_schema
+
+    ensure_org_units_schema(conn)
+    existing = conn.execute("SELECT COUNT(*) FROM org_units").fetchone()[0]
+    if existing != len(ALL_SITES):
+        sync_org_units_from_sites(conn, force=True)
+
+    ensure_identity_schema(conn)
+    sync_person_identities(conn)
+    ensure_posts_schema(conn)
+
     conn.commit()
     return conn

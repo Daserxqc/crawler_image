@@ -67,7 +67,7 @@ SKIP_NAMES = frozenset(
     }
 )
 
-_BAD_PREFIX = ("命", "免", "将", "其", "等")
+_BAD_PREFIX = ("命", "免", "去", "将", "其", "等")
 # 「任」「关」是常见姓，不能整段禁；只拦公文套话开头。
 _BAD_NAME_STARTS = (
     "关于",

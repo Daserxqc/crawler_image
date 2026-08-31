@@ -75,10 +75,14 @@ class AccountsApiTests(unittest.TestCase):
         user = me.json()["user"]
         self.assertEqual(user["channel"], "email")
         self.assertEqual(user["account_masked"], "w***@example.com")
-        self.assertEqual(user["display_name"], "w***@example.com")
+        self.assertEqual(user["display_name"], "税务用户0001")
+        self.assertEqual(user["default_nickname"], "税务用户0001")
+        self.assertFalse(user["nickname_is_custom"])
         self.assertNotIn("email", user)
         self.assertNotIn("phone", user)
         self.assertNotIn("account", user)
+        self.assertIn("session_expires_at", user)
+        self.assertIn("last_login_at", user)
 
         add = self.client.post(
             "/api/watches",
@@ -131,17 +135,39 @@ class AccountsApiTests(unittest.TestCase):
         db.close()
 
         out = self.client.get("/api/notify/outbox")
-        self.assertGreaterEqual(len(out.json()["items"]), 1)
+        self.assertEqual(out.status_code, 200)
+        items = out.json()["items"]
+        self.assertGreaterEqual(len(items), 1)
+        self.assertIn("body_preview", items[0])
+
+        redirect = self.client.get("/watches", follow_redirects=False)
+        self.assertEqual(redirect.status_code, 302)
+        self.assertEqual(redirect.headers.get("location"), "/account#watches")
 
         pages = [
             self.client.get("/login"),
-            self.client.get("/watches"),
+            self.client.get("/account"),
             self.client.get("/anomalies"),
         ]
         for page in pages:
             self.assertEqual(page.status_code, 200)
 
-    def test_gmail_and_phone_login(self) -> None:
+    def test_update_nickname(self) -> None:
+        self._login()
+        bad = self.client.patch("/api/auth/profile", json={"nickname": "a"})
+        self.assertEqual(bad.status_code, 400)
+        ok = self.client.patch("/api/auth/profile", json={"nickname": "测试昵称"})
+        self.assertEqual(ok.status_code, 200)
+        me = self.client.get("/api/auth/me")
+        self.assertEqual(me.json()["user"]["nickname"], "测试昵称")
+        self.assertEqual(me.json()["user"]["display_name"], "测试昵称")
+        self.assertTrue(me.json()["user"]["nickname_is_custom"])
+
+        me2 = self.client.get("/api/auth/me")
+        user2 = me2.json()["user"]
+        self.assertIn("default_nickname", user2)
+        self.assertTrue(user2["display_name"])
+
         email = "x15162608130@gmail.com"
         req = self.client.post(
             "/api/auth/request-code",

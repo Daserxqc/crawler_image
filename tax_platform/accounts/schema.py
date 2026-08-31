@@ -73,6 +73,9 @@ CREATE INDEX IF NOT EXISTS idx_login_codes_email ON login_codes(email, expires_a
 
 def ensure_accounts_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(ACCOUNTS_SCHEMA)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "nickname" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN nickname TEXT")
     conn.commit()
 
 

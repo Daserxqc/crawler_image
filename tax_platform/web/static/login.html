@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>登录 · 税局人事检�?/title>
+  <title>登录 · 税局人事检索</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
@@ -18,15 +18,15 @@
         <p class="login-eyebrow">账号</p>
         <h1 class="login-title" id="login-heading">登录</h1>
         <p class="login-lead">
-          公开检索无需登录。登录后可关注单�?人员，并在有新任免时收到通知�?
+          公开检索无需登录。登录后可关注单位/人员，并在有新任免时收到通知。
         </p>
 
         <div class="login-method-tabs" role="tablist" aria-label="登录方式">
           <button type="button" class="login-method is-active" role="tab" aria-selected="true" data-channel="email" id="tab-email">
-            邮箱验证�?
+            邮箱验证码
           </button>
           <button type="button" class="login-method" role="tab" aria-selected="false" data-channel="phone" id="tab-phone">
-            手机验证�?
+            手机验证码
           </button>
         </div>
 
@@ -45,7 +45,7 @@
               />
             </div>
             <div class="field" id="phone-field" hidden>
-              <label for="phone">手机�?/label>
+              <label for="phone">手机号</label>
               <input
                 id="phone"
                 name="phone"
@@ -57,9 +57,9 @@
                 aria-describedby="account-hint"
               />
             </div>
-            <p class="field-hint" id="account-hint">验证码约 15 分钟内有效�?/p>
+            <p class="field-hint" id="account-hint">验证码约 15 分钟内有效。</p>
             <p class="login-status" id="account-status" role="status" aria-live="polite"></p>
-            <button class="btn login-primary" type="submit" id="send-btn">获取验证�?/button>
+            <button class="btn login-primary" type="submit" id="send-btn">获取验证码</button>
           </form>
         </div>
 
@@ -86,7 +86,7 @@
                 aria-describedby="code-hint"
                 spellcheck="false"
               />
-              <p class="field-hint" id="code-hint">输入�?6 位后自动登录；约 15 分钟内有效�?/p>
+              <p class="field-hint" id="code-hint">输入满 6 位后自动登录；约 15 分钟内有效。</p>
             </div>
             <p class="login-status" id="code-status" role="status" aria-live="polite"></p>
             <button class="btn login-primary" type="submit" id="verify-btn">登录</button>
@@ -95,13 +95,13 @@
         </div>
 
         <p class="login-footer">
-          <a href="/">先不登录，继续检�?�?/a>
+          <a href="/">先不登录，继续检索 →</a>
         </p>
       </section>
     </div>
   </main>
 
   <script src="/static/js/common.js?v=17"></script>
-  <script src="/static/js/login.js?v=4"></script>
+  <script src="/static/js/login.js?v=5"></script>
 </body>
 </html>

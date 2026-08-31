@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import Any
 
-from tax_platform.accounts.auth import PHONE_PREFIX, display_account
+from tax_platform.accounts.auth import display_account
 from tax_platform.accounts.schema import connect
 from tax_platform.config.sites import get_site
 from tax_platform.normalize.change import classify_change

@@ -224,6 +224,28 @@ class AppointmentClauseTests(unittest.TestCase):
         self.assertEqual(events[0].person_name, "田淑芳")
         self.assertEqual(events[0].action, "dismiss")
 
+    def test_dismiss_glued_name_post_no_de(self) -> None:
+        """辽阳等：免去许绍华国家税务总局…副局长职务（无「的/同志」）。"""
+        from tax_platform.models.entities import NoticeMeta
+        from tax_platform.normalize.person import is_plausible_person_name
+
+        self.assertFalse(is_plausible_person_name("去许绍华"))
+
+        notice = NoticeMeta(
+            bureau_code="liaoning_col313",
+            title="国家税务总局辽阳市税务局任免工作人员（2021年4月28日）",
+            source_url="http://liaoning.example/n.html",
+            raw_text=(
+                "决定：免去许绍华国家税务总局辽阳市税务局第一稽查局副局长职务。"
+                "任命肖乐为国家税务总局辽阳市税务局第一稽查局副局长。"
+            ),
+        )
+        events = extract_appointment_events(notice)
+        names = {(e.person_name, e.action) for e in events}
+        self.assertIn(("许绍华", "dismiss"), names)
+        self.assertIn(("肖乐", "appoint"), names)
+        self.assertNotIn("去许绍华", {e.person_name for e in events})
+
 
 if __name__ == "__main__":
     unittest.main()

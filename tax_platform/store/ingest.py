@@ -202,6 +202,15 @@ def get_person_profile(pid: str, *, conn: sqlite3.Connection | None = None) -> d
         profile_bureau_code=bureau_code,
     )
 
+    from tax_platform.store.identity import appearances_for_identity, resolve_identity_id
+
+    identity_id = None
+    if "identity_id" in person.keys():
+        identity_id = person["identity_id"]
+    if not identity_id:
+        identity_id = resolve_identity_id(db, bureau_code=bureau_code, name=name)
+    appearances = appearances_for_identity(db, identity_id) if identity_id else []
+
     profile = {
         "id": pid,
         "name": name,
@@ -209,6 +218,8 @@ def get_person_profile(pid: str, *, conn: sqlite3.Connection | None = None) -> d
         "bureau_name": site.name if site else bureau_code,
         "org_level": site.level if site else None,
         "region": region,
+        "identity_id": identity_id,
+        "appearances": appearances,
         "tags": _build_tags(current, level_label),
         "current": current,
         "history": history,

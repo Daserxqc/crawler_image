@@ -66,7 +66,7 @@
       });
       const link = document.createElement("a");
       link.className = "btn secondary";
-      link.href = `/posts?bureau_code=${encodeURIComponent(bureauCode)}&department=${encodeURIComponent(
+      link.href = `/posts/view?bureau_code=${encodeURIComponent(bureauCode)}&department=${encodeURIComponent(
         department
       )}`;
       link.textContent = "岗位档案";
@@ -224,66 +224,110 @@
         org_level: levelSelect.value || undefined,
         bureau_code: bureauParam(),
       });
-      const leaders = (data.supervising_leaders || [])
+      const leaderItems = data.supervising_leaders || [];
+      const staffItems = data.staff || [];
+      const upwardItems = data.upward || [];
+      const leaderCount = data.supervisor_count ?? leaderItems.length;
+      const staffCount = data.staff_count ?? staffItems.length;
+
+      const deptLabel = data.browse_all ? "全部科室" : data.department || department || "全部";
+      lastBureauCode = bureauParam() || bureauSelect.value || null;
+      lastDepartment = data.browse_all ? null : deptLabel;
+
+      const upwardByKey = new Map();
+      upwardItems.forEach((u) => {
+        const lead = u.leader || {};
+        const key = lead.id || `${u.bureau_code}:${lead.name || ""}`;
+        upwardByKey.set(key, u);
+      });
+
+      function hierarchyMeta(u) {
+        if (!u) return [];
+        const bureauName = bureauLabel(u.bureau_code);
+        const region = (u.region || "").trim();
+        const parentName = u.parent_bureau_code ? bureauLabel(u.parent_bureau_code) : "";
+        const parts = [];
+        if (u.org_level) parts.push(levelLabel(u.org_level));
+        if (bureauName) parts.push(bureauName);
+        if (region && region !== bureauName) parts.push(region);
+        if (parentName && parentName !== region && parentName !== bureauName) {
+          parts.push(`上级 ${parentName}`);
+        }
+        return parts;
+      }
+
+      const leaders = leaderItems
         .map((l) => {
           const id = l.id || (l.bureau_code && l.name ? `${l.bureau_code}:${l.name}` : null);
           const label = l.name || l.person_name || "—";
           const name = id
             ? `<a href="/people/${encodeURIComponent(id)}">${escapeHtml(label)}</a>`
             : escapeHtml(label);
-          return `<li>${name} <span class="muted">${escapeHtml(l.title_raw || "")} · ${escapeHtml(
-            bureauLabel(l.bureau_code)
-          )}</span></li>`;
+          const key = id || `${l.bureau_code}:${label}`;
+          const chain = hierarchyMeta(upwardByKey.get(key) || {
+            bureau_code: l.bureau_code,
+            org_level: l.org_level,
+          });
+          const title = (l.title_raw || "").trim();
+          const line2 = [title, ...chain].filter(Boolean).join(" · ");
+          return `<li class="dept-hit">
+            <div class="dept-hit-name">${name}</div>
+            ${
+              line2
+                ? `<div class="dept-hit-meta muted">${escapeHtml(line2)}</div>`
+                : ""
+            }
+          </li>`;
         })
         .join("");
-      const staff = (data.staff || [])
+
+      const staff = staffItems
         .map((s) => {
-          return `<li><a href="/people/${encodeURIComponent(s.id)}">${escapeHtml(s.name)}</a>
-            <span class="muted">${escapeHtml(formatCurrent(s.current))} · ${escapeHtml(
+          return `<li class="dept-hit">
+            <div class="dept-hit-name"><a href="/people/${encodeURIComponent(s.id)}">${escapeHtml(
+              s.name
+            )}</a></div>
+            <div class="dept-hit-meta muted">${escapeHtml(formatCurrent(s.current))} · ${escapeHtml(
               bureauLabel(s.bureau_code)
-            )}</span></li>`;
+            )}</div>
+          </li>`;
         })
         .join("");
-      const upward = (data.upward || [])
-        .map((u) => {
-          const lead = u.leader || {};
-          const id = lead.id;
-          const label = lead.name || "—";
-          const name = id
-            ? `<a href="/people/${encodeURIComponent(id)}">${escapeHtml(label)}</a>`
-            : escapeHtml(label);
-          return `<li>${escapeHtml(levelLabel(u.org_level))} · ${escapeHtml(bureauLabel(u.bureau_code))} · ${name}
-            <span class="muted">${escapeHtml(u.region || "")}${
-              u.parent_bureau_code ? ` · 上级 ${escapeHtml(bureauLabel(u.parent_bureau_code))}` : ""
-            }</span></li>`;
-        })
-        .join("");
-      const deptLabel = data.browse_all ? "全部科室" : data.department || department || "全部";
-      lastBureauCode = bureauParam() || bureauSelect.value || null;
-      lastDepartment = data.browse_all ? null : deptLabel;
+
+      const leadersEmpty = data.browse_all
+        ? "浏览全体时不按科室聚合分管；选定科室后可查看分管领导"
+        : "暂无（源站未公布或未采集到分管）";
+      const postsLink =
+        !data.browse_all && lastBureauCode && lastDepartment
+          ? `<p class="dept-panel-foot"><a class="btn secondary" href="/posts/view?bureau_code=${encodeURIComponent(
+              lastBureauCode
+            )}&department=${encodeURIComponent(lastDepartment)}">查看该科室岗位档案 →</a></p>`
+          : "";
+
       await refreshDeptWatchBar(lastBureauCode, lastDepartment);
+
       out.innerHTML = `
-        <div class="results-summary">科室：${escapeHtml(deptLabel)}
-          · 分管 ${escapeHtml(data.supervisor_count ?? 0)} · 任职 ${escapeHtml(data.staff_count ?? 0)}${
+        <section class="panel-card dept-results" aria-label="科室穿透结果">
+          <div class="results-summary">科室：${escapeHtml(deptLabel)}${
             data.browse_all ? "（本页最多 100 条）" : ""
           }</div>
-        <h2 class="results-group-title">分管领导</h2>
-        <ul>${
-          leaders ||
-          (data.browse_all
-            ? "<li class='muted'>浏览全体时不按科室聚合分管；选定科室后可查看分管领导</li>"
-            : "<li class='muted'>暂无（源站未公布或未采集到分管）</li>")
-        }</ul>
-        <h2 class="results-group-title">任职人员</h2>
-        <ul>${staff || "<li class='muted'>暂无匹配任职</li>"}</ul>
-        ${
-          !data.browse_all && lastBureauCode && lastDepartment
-            ? `<p><a class="btn secondary" href="/posts?bureau_code=${encodeURIComponent(
-                lastBureauCode
-              )}&department=${encodeURIComponent(lastDepartment)}">查看该科室岗位档案 →</a></p>`
-            : ""
-        }
-        ${upward ? `<h2 class="results-group-title">层级穿透</h2><ul>${upward}</ul>` : ""}
+          <p class="dept-chain-hint muted">科室 → 分管领导 → 所在地区层级</p>
+
+          <h2 class="results-group-title">分管领导（向上穿透）${
+            leaderCount ? ` · ${escapeHtml(leaderCount)}` : ""
+          }</h2>
+          <ul class="dept-hit-list">${
+            leaders || `<li class="dept-hit muted">${escapeHtml(leadersEmpty)}</li>`
+          }</ul>
+
+          <details class="dept-staff-block"${staffCount ? " open" : ""}>
+            <summary>本科室任职人员${staffCount ? ` · ${escapeHtml(staffCount)}` : ""}</summary>
+            <ul class="dept-hit-list">${
+              staff || `<li class="dept-hit muted">暂无匹配任职</li>`
+            }</ul>
+            ${postsLink}
+          </details>
+        </section>
       `;
     } catch (err) {
       out.innerHTML = "";

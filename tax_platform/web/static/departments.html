@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>科室穿�?· 税局人事检�?/title>
+  <title>科室穿透 · 税局人事检索</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/app.css?v=28" />
+  <link rel="stylesheet" href="/static/css/app.css?v=38" />
 </head>
 <body class="app" data-page="departments">
   <header class="app-header" id="app-header"></header>
@@ -15,8 +15,8 @@
   <main class="app-main">
     <div class="shell">
       <section class="panel-card" aria-labelledby="dept-heading">
-        <h2 class="panel-heading" id="dept-heading">科室筛�?/h2>
-        <p class="muted" style="margin: -0.5rem 0 1rem;">源站未公布分管时，分管领导侧会显示「暂无」。可先选地区后直接查询全体；选科室则做穿透�?/p>
+        <h2 class="panel-heading" id="dept-heading">科室筛选</h2>
+        <p class="muted" style="margin: -0.5rem 0 1rem;">选科室后按「科室 → 分管领导 → 地区层级」向上穿透。源站未公布分管时会显示「暂无」。</p>
         <form class="filter-grid" id="dept-form" autocomplete="off">
           <div class="field">
             <label for="org_level">地区层级</label>
@@ -47,7 +47,7 @@
             <button class="btn secondary" type="button" id="reset-btn">重置</button>
           </div>
         </form>
-        <div class="watch-bar" id="dept-watch-bar" hidden aria-label="关注当前筛�?></div>
+        <div class="watch-bar" id="dept-watch-bar" hidden aria-label="关注当前筛选"></div>
       </section>
 
       <div id="out"></div>
@@ -55,7 +55,7 @@
     </div>
   </main>
 
-  <script src="/static/js/common.js?v=17"></script>
-  <script src="/static/js/departments.js?v=4"></script>
+  <script src="/static/js/common.js?v=22"></script>
+  <script src="/static/js/departments.js?v=8"></script>
 </body>
 </html>

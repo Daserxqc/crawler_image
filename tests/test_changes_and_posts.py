@@ -128,6 +128,39 @@ class ChangesAndPostsTests(unittest.TestCase):
         names = {i["person_name"] for i in p.json()["incumbents"]}
         self.assertIn("张甲", names)
 
+    def test_api_posts_search(self) -> None:
+        from tax_platform.store.identity import sync_person_identities
+        from tax_platform.store.posts import rebuild_org_posts
+
+        sync_person_identities(self.conn, force=True)
+        rebuild_org_posts(self.conn)
+        self.conn.commit()
+
+        r = self.client.get(
+            "/api/posts/search",
+            params={"bureau_code": "shanghai", "department": "政策法规"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertGreaterEqual(body["total"], 1)
+        self.assertTrue(any(i["department"] == "政策法规处" for i in body["items"]))
+        self.assertTrue(any(i["past_count"] >= 1 for i in body["items"]))
+
+    def test_api_posts_search_strips_level_tag(self) -> None:
+        from tax_platform.store.identity import sync_person_identities
+        from tax_platform.store.posts import rebuild_org_posts
+
+        sync_person_identities(self.conn, force=True)
+        rebuild_org_posts(self.conn)
+        self.conn.commit()
+
+        r = self.client.get(
+            "/api/posts/search",
+            params={"bureau_code": "shanghai", "title": "处长（市局）"},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertGreaterEqual(r.json()["total"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

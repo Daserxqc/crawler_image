@@ -126,6 +126,21 @@ def post_archive(
 
     owns = conn is None
     db = conn or connect()
+
+    from tax_platform.store.posts import post_archive_from_db, posts_ready
+
+    if posts_ready(db):
+        cached = post_archive_from_db(
+            bureau_code=bureau_code,
+            department=department,
+            title=title,
+            conn=db,
+        )
+        if cached is not None:
+            if owns:
+                db.close()
+            return cached
+
     rows = db.execute(
         """
         SELECT * FROM appointment_events
@@ -150,6 +165,7 @@ def post_archive(
     open_tenures: dict[str, dict[str, Any]] = {}
     past: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
+    seen_event_keys: set[tuple[str, str, str, str, str, str]] = set()
 
     for row in matched:
         name = row["person_name"]
@@ -162,6 +178,18 @@ def post_archive(
             previous_title=(open_tenures.get(name) or {}).get("title"),
             previous_department=(open_tenures.get(name) or {}).get("department"),
         )
+        event_key = (
+            name,
+            row["action"],
+            row["department_raw"] or "",
+            row["title_raw"] or "",
+            row["effective_on"] or "",
+            ctype.value,
+        )
+        if event_key in seen_event_keys:
+            continue
+        seen_event_keys.add(event_key)
+
         event = {
             "person_name": name,
             "change_type": ctype.value,
@@ -179,9 +207,19 @@ def post_archive(
                 past.append({**prev, "ended_on": row["effective_on"], "end_change_type": ctype.value})
             continue
 
-        # New appoint/transfer/promote on this post: close previous open tenure for same person.
+        # Successor appoint: close other open incumbents on the *same* title/post.
+        row_title = row["title_raw"] or ""
+        for other_name in list(open_tenures.keys()):
+            if other_name == name:
+                continue
+            other = open_tenures[other_name]
+            if (other.get("title") or "") != row_title:
+                continue
+            other = open_tenures.pop(other_name)
+            past.append({**other, "ended_on": row["effective_on"], "end_change_type": "succeeded"})
+
         prev = open_tenures.get(name)
-        if prev:
+        if prev and prev.get("since") != row["effective_on"]:
             past.append({**prev, "ended_on": row["effective_on"], "end_change_type": "replaced"})
         open_tenures[name] = {
             "person_name": name,
@@ -212,6 +250,7 @@ def post_archive(
         "history": history,
         "incumbent_count": len(incumbents),
         "history_count": len(history),
+        "source": "live",
     }
     if owns:
         db.close()

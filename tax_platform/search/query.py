@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-from tax_platform.config.sites import get_site
+from tax_platform.config.sites import get_site, list_sites
 from tax_platform.normalize.department import (
     clean_department_name,
     normalize_department,
@@ -37,6 +37,7 @@ def search_people(
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 50,
+    offset: int = 0,
     conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
     """Return people matching title / department / name, each with appointment records.
@@ -47,12 +48,49 @@ def search_people(
 
     *date_from* / *date_to* are ISO dates (YYYY-MM-DD); filter appointment rows
     and drop pure appointees with no in-range events.
+
+    *limit* ``0`` means enrich all matches (export). Prefer ``search_people_page``
+    for UI pagination so only one page is enriched.
     """
+    _, items = search_people_page(
+        title=title,
+        department=department,
+        name=name,
+        org_level=org_level,
+        bureau_code=bureau_code,
+        unit_code=unit_code,
+        unit_category=unit_category,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+        conn=conn,
+    )
+    return items
+
+
+def search_people_page(
+    *,
+    title: str | None = None,
+    department: str | None = None,
+    name: str | None = None,
+    org_level: str | None = None,
+    bureau_code: str | None = None,
+    unit_code: str | None = None,
+    unit_category: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Collect matches cheaply, return ``(total, enriched_page)``."""
     title_q = (title or "").strip()
     dept_q = clean_department_name(department) or (department or "").strip()
     name_q = (name or "").strip()
     region_only = not title_q and not dept_q and not name_q
     cat_q = (unit_category or "").strip()
+    offset = max(0, int(offset or 0))
 
     owns = conn is None
     db = conn or connect()
@@ -92,24 +130,74 @@ def search_people(
     if region_only and cat_q in {"internal", "direct", "dispatched"} and not browse_level:
         browse_level = "headquarters"
 
-    # Region browse: list everyone in scope when only地区/单位筛选.
+    # Region browse: COUNT + LIMIT/OFFSET in SQL, enrich only the current page.
     if region_only:
-        person_sql = "SELECT bureau_code, name FROM persons WHERE 1=1"
-        person_args: list[Any] = []
-        if bureau_code:
-            person_sql += " AND bureau_code = ?"
-            person_args.append(bureau_code)
-        for row in db.execute(person_sql, person_args):
-            if not _org_level_matches(row["bureau_code"], browse_level):
-                continue
+        allowed_bureaus: list[str] | None = None
+        if browse_level or bureau_code:
+            if browse_level:
+                allowed_bureaus = [s.code for s in list_sites(level=browse_level)]
+            else:
+                allowed_bureaus = [s.code for s in list_sites()]
+            if bureau_code:
+                allowed_bureaus = [b for b in allowed_bureaus if b == bureau_code] or [bureau_code]
+
+        where = "1=1"
+        args: list[Any] = []
+        if allowed_bureaus is not None:
+            if not allowed_bureaus:
+                if owns:
+                    db.close()
+                return 0, []
+            ph = ",".join("?" * len(allowed_bureaus))
+            where += f" AND bureau_code IN ({ph})"
+            args.extend(allowed_bureaus)
+
+        total = int(db.execute(f"SELECT COUNT(*) FROM persons WHERE {where}", args).fetchone()[0])
+        page_limit = limit if limit > 0 else min(total, 2000)
+        page_sql = (
+            f"SELECT bureau_code, name FROM persons WHERE {where} "
+            "ORDER BY bureau_code, name LIMIT ? OFFSET ?"
+        )
+        for row in db.execute(page_sql, [*args, page_limit, offset]):
             remember(row["bureau_code"], row["name"], "region_browse", "person")
-        for row in _iter_leaders(db, bureau_code=bureau_code, org_level=browse_level):
-            remember(
-                row["bureau_code"],
-                row["person_name"],
-                "region_browse",
-                "leader",
+
+        results = []
+        for (bureau, person), meta in hits.items():
+            pid = person_id(bureau, person)
+            profile = get_person_profile(pid, conn=db)
+            appointments = _filter_appointments_by_date(
+                _person_appointments(db, bureau, person), date_from, date_to
             )
+            results.append(
+                enrich_hit_display(
+                    {
+                        "id": pid,
+                        "name": person,
+                        "bureau_code": bureau,
+                        "org_level": _level_of(bureau),
+                        "roles": sorted(meta["roles"]),
+                        "match_reasons": meta["match_reasons"],
+                        "supervised_departments": [],
+                        "current": profile.get("current") if profile else None,
+                        "appointments": appointments,
+                        "appointment_count": len(appointments),
+                        "profile": profile,
+                    }
+                )
+            )
+        if cat_q:
+            results = [r for r in results if r.get("unit_category") == cat_q]
+        if unit_code and unit_code not in {"", "sta"}:
+            results = [r for r in results if _hit_matches_unit(r, unit_code)]
+        elif unit_code == "sta":
+            results = [
+                r
+                for r in results
+                if r.get("bureau_code") == "sta" or _hit_matches_unit(r, unit_code)
+            ]
+        if owns:
+            db.close()
+        return total, results
 
     # 0) Name-only / name-primary: pull from persons + leaders + events by name
     if name_q and not title_q and not dept_q:
@@ -124,99 +212,119 @@ def search_people(
             remember(row["bureau_code"], row["name"], "person_name", "person")
 
     # 1) Leaders: title + oversight departments + name
-    for row in _iter_leaders(db, bureau_code=bureau_code, org_level=org_level):
-        bureau = row["bureau_code"]
-        person = row["person_name"]
-        deps = row["departments"]
-        if name_q and name_q not in person:
-            continue
-        if title_q and _title_matches(row["title_raw"], title_q):
-            remember(bureau, person, f"leader_title:{row['title_raw']}", "leader")
-        if name_q and not title_q and not dept_q:
-            remember(bureau, person, "leader_name", "leader")
-        if dept_q:
-            matched_dep = None
-            for raw in deps:
-                if _dept_matches(str(raw), dept_q, org_level=_level_of(bureau)):
-                    matched_dep = raw
-                    break
-            if matched_dep is not None:
+    if not region_only:
+        for row in _iter_leaders(db, bureau_code=bureau_code, org_level=org_level):
+            bureau = row["bureau_code"]
+            person = row["person_name"]
+            deps = row["departments"]
+            if name_q and name_q not in person:
+                continue
+            if title_q and _title_matches(row["title_raw"], title_q):
+                remember(bureau, person, f"leader_title:{row['title_raw']}", "leader")
+            if name_q and not title_q and not dept_q:
+                remember(bureau, person, "leader_name", "leader")
+            if dept_q:
+                matched_dep = None
+                for raw in deps:
+                    if _dept_matches(str(raw), dept_q, org_level=_level_of(bureau)):
+                        matched_dep = raw
+                        break
+                if matched_dep is not None:
+                    remember(
+                        bureau,
+                        person,
+                        f"supervisor:{matched_dep}",
+                        "leader",
+                        role="supervisor",
+                    )
+                elif _dept_matches(row["title_raw"] or "", dept_q, org_level=_level_of(bureau)):
+                    remember(
+                        bureau,
+                        person,
+                        f"leader_title_dept:{row['title_raw']}",
+                        "leader",
+                        role="appointee",
+                    )
+
+        # 2) Appointment events (skipped for empty/region browse)
+        event_sql = (
+            "SELECT bureau_code, person_name, title_raw, department_raw, action, "
+            "effective_on, notice_title, source_url, raw_clause "
+            "FROM appointment_events WHERE 1=1"
+        )
+        event_args: list[Any] = []
+        if bureau_code:
+            event_sql += " AND bureau_code = ?"
+            event_args.append(bureau_code)
+        if name_q:
+            event_sql += " AND person_name LIKE ?"
+            event_args.append(f"%{name_q}%")
+        for row in db.execute(event_sql, event_args):
+            bureau = row["bureau_code"]
+            if not _org_level_matches(
+                bureau,
+                org_level,
+                title_raw=row["title_raw"],
+                department_raw=row["department_raw"],
+            ):
+                continue
+            person = row["person_name"]
+            matched = False
+            if name_q and not title_q and not dept_q:
+                remember(bureau, person, "event_name", "event")
+                matched = True
+            if title_q and _title_matches(row["title_raw"], title_q):
+                remember(bureau, person, f"event_title:{row['title_raw']}", "event")
+                matched = True
+            if dept_q and _dept_matches(
+                row["department_raw"] or "",
+                dept_q,
+                org_level=_level_of(bureau),
+            ):
                 remember(
                     bureau,
                     person,
-                    f"supervisor:{matched_dep}",
-                    "leader",
-                    role="supervisor",
-                )
-            elif _dept_matches(row["title_raw"] or "", dept_q, org_level=_level_of(bureau)):
-                remember(
-                    bureau,
-                    person,
-                    f"leader_title_dept:{row['title_raw']}",
-                    "leader",
+                    f"event_dept:{row['department_raw']}",
+                    "event",
                     role="appointee",
                 )
+                matched = True
+            if dept_q and _dept_matches(row["title_raw"] or "", dept_q, org_level=_level_of(bureau)):
+                remember(
+                    bureau,
+                    person,
+                    f"event_title_dept:{row['title_raw']}",
+                    "event",
+                    role="appointee",
+                )
+                matched = True
+            if not matched:
+                continue
 
-    # 2) Appointment events
-    event_sql = (
-        "SELECT bureau_code, person_name, title_raw, department_raw, action, "
-        "effective_on, notice_title, source_url, raw_clause "
-        "FROM appointment_events WHERE 1=1"
+    ranked_keys = _rank_hit_keys_cheap(db, hits)
+    if org_level:
+        ranked_keys = [key for key in ranked_keys if _org_level_matches(key[0], org_level)]
+
+    total = len(ranked_keys)
+    need_heavy_filter = bool(
+        (unit_code and unit_code not in {""})
+        or cat_q
+        or date_from
+        or date_to
     )
-    event_args: list[Any] = []
-    if bureau_code:
-        event_sql += " AND bureau_code = ?"
-        event_args.append(bureau_code)
-    if name_q:
-        event_sql += " AND person_name LIKE ?"
-        event_args.append(f"%{name_q}%")
-    for row in db.execute(event_sql, event_args):
-        bureau = row["bureau_code"]
-        if not _org_level_matches(
-            bureau,
-            org_level,
-            title_raw=row["title_raw"],
-            department_raw=row["department_raw"],
-        ):
-            continue
-        person = row["person_name"]
-        if region_only:
-            remember(bureau, person, "region_browse", "event")
-            continue
-        matched = False
-        if name_q and not title_q and not dept_q:
-            remember(bureau, person, "event_name", "event")
-            matched = True
-        if title_q and _title_matches(row["title_raw"], title_q):
-            remember(bureau, person, f"event_title:{row['title_raw']}", "event")
-            matched = True
-        if dept_q and _dept_matches(
-            row["department_raw"] or "",
-            dept_q,
-            org_level=_level_of(bureau),
-        ):
-            remember(
-                bureau,
-                person,
-                f"event_dept:{row['department_raw']}",
-                "event",
-                role="appointee",
-            )
-            matched = True
-        if dept_q and _dept_matches(row["title_raw"] or "", dept_q, org_level=_level_of(bureau)):
-            remember(
-                bureau,
-                person,
-                f"event_title_dept:{row['title_raw']}",
-                "event",
-                role="appointee",
-            )
-            matched = True
-        if not matched:
-            continue
+
+    if limit > 0:
+        if need_heavy_filter:
+            # Over-fetch then filter; still far cheaper than enriching everyone.
+            window = ranked_keys[offset : offset + max(limit * 25, limit)]
+        else:
+            window = ranked_keys[offset : offset + limit]
+    else:
+        window = ranked_keys
 
     results: list[dict[str, Any]] = []
-    for (bureau, person), meta in hits.items():
+    for bureau, person in window:
+        meta = hits[(bureau, person)]
         pid = person_id(bureau, person)
         profile = get_person_profile(pid, conn=db)
         appointments = _person_appointments(db, bureau, person)
@@ -224,35 +332,29 @@ def search_people(
         supervised = departments_for_leader(person, bureau_code=bureau, conn=db)
         roles = sorted(meta["roles"])
         if dept_q and not roles:
-            roles = (
-                ["supervisor"]
-                if supervised
-                else ["appointee"]
-            )
-        # Date filter: drop pure appointees with no remaining events
+            roles = ["supervisor"] if supervised else ["appointee"]
         if (date_from or date_to) and not appointments and "supervisor" not in roles:
             if "appointee" in roles or not dept_q:
-                # name/title hits without in-range events also drop
                 if "supervisor" not in roles:
                     continue
-        results.append(enrich_hit_display(
-            {
-                "id": pid,
-                "name": person,
-                "bureau_code": bureau,
-                "org_level": _level_of(bureau),
-                "roles": roles,
-                "match_reasons": meta["match_reasons"],
-                "supervised_departments": supervised[0]["departments"] if supervised else [],
-                "current": profile.get("current") if profile else None,
-                "appointments": appointments,
-                "appointment_count": len(appointments),
-                "profile": profile,
-            }
-        ))
+        results.append(
+            enrich_hit_display(
+                {
+                    "id": pid,
+                    "name": person,
+                    "bureau_code": bureau,
+                    "org_level": _level_of(bureau),
+                    "roles": roles,
+                    "match_reasons": meta["match_reasons"],
+                    "supervised_departments": supervised[0]["departments"] if supervised else [],
+                    "current": profile.get("current") if profile else None,
+                    "appointments": appointments,
+                    "appointment_count": len(appointments),
+                    "profile": profile,
+                }
+            )
+        )
 
-    # 地区层级：入库按来源局过滤后，展示层按「现任任职单位」推断层级。
-    # 再按展示层级收敛，避免选「区县局」却出现「总局层面」分组标题。
     if org_level:
         results = [
             r
@@ -265,7 +367,6 @@ def search_people(
         title_text = r.get("title_display") or current.get("title") or ""
         unit_key = r.get("unit_sort_key") or r.get("unit_display") or ""
         level = r.get("org_level")
-        # 总局内：本机关班子 → 内设 → 直属 → 派出；再按单位、职务
         hq_bucket = headquarters_org_bucket(r) if level == "headquarters" else 0
         if level == "headquarters" and hq_bucket == 0:
             unit_key = ""
@@ -289,7 +390,45 @@ def search_people(
         results = results[:limit]
     if owns:
         db.close()
-    return results
+    return total, results
+
+
+def _rank_hit_keys_cheap(
+    db: sqlite3.Connection, hits: dict[tuple[str, str], dict[str, Any]]
+) -> list[tuple[str, str]]:
+    """Order match keys using persons.title_current when available (no N+1 profile)."""
+    if not hits:
+        return []
+    titles: dict[tuple[str, str], str] = {}
+    keys = list(hits.keys())
+    chunk = 400
+    for i in range(0, len(keys), chunk):
+        part = keys[i : i + chunk]
+        placeholders = ",".join(["(?,?)"] * len(part))
+        args: list[Any] = []
+        for bureau, name in part:
+            args.extend([bureau, name])
+        rows = db.execute(
+            f"""
+            SELECT bureau_code, name, COALESCE(title_current, '') AS title_current
+            FROM persons
+            WHERE (bureau_code, name) IN ({placeholders})
+            """,
+            args,
+        ).fetchall()
+        for row in rows:
+            titles[(row["bureau_code"], row["name"])] = row["title_current"] or ""
+
+    def key_fn(item: tuple[str, str]) -> tuple:
+        bureau, name = item
+        return (
+            org_level_sort_rank(_level_of(bureau)),
+            title_sort_rank(titles.get(item, "")),
+            name,
+            bureau,
+        )
+
+    return sorted(keys, key=key_fn)
 
 
 def leaders_for_department(
@@ -411,24 +550,29 @@ def lookup_department(
             bureau_code=bureau_code,
             conn=db,
         )
-        people = search_people(
+        fetch_n = max(staff_limit * 8, 80) if staff_limit > 0 else 300
+        total, people = search_people_page(
             department=dept_q,
             org_level=org_level,
             bureau_code=bureau_code,
-            limit=0,
+            limit=fetch_n,
+            offset=0,
             conn=db,
         )
         staff = [p for p in people if "appointee" in p.get("roles", [])]
+        if staff_limit > 0:
+            staff = staff[:staff_limit]
+        staff_count = total
     else:
-        people = search_people(
+        page_n = staff_limit if staff_limit > 0 else 100
+        total, staff = search_people_page(
             org_level=org_level,
             bureau_code=bureau_code,
-            limit=0,
+            limit=page_n,
+            offset=0,
             conn=db,
         )
-        staff = people
-    if staff_limit > 0:
-        staff = staff[:staff_limit]
+        staff_count = total
     result = {
         "department": dept_q or "全部",
         "org_level": org_level,
@@ -436,7 +580,7 @@ def lookup_department(
         "supervising_leaders": supervisors,
         "staff": staff,
         "supervisor_count": len(supervisors),
-        "staff_count": len(staff),
+        "staff_count": staff_count,
         "browse_all": not bool(dept_q),
     }
     if owns:

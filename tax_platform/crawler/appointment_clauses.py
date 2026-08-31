@@ -87,6 +87,11 @@ DISMISS_TONGZHI_RE = re.compile(
 )
 DISMISS_DE_RE = re.compile(rf"免去(?P<name>{NAME_RE})的(?P<post>[^；。;]+?)(?:职务|职级)")
 DISMISS_BARE_RE = re.compile(rf"免去(?P<name>{NAME_RE})(?:职务|职级)")
+# Liaoning / many cities: 「免去许绍华国家税务总局…副局长职务」(no 的/同志)
+# Require post to start with 国家税务总局 so greedy {2,4} name won't swallow 「国」.
+DISMISS_GLUED_RE = re.compile(
+    rf"免去(?P<name>{NAME_RE})(?P<post>国家税务总局[^；。;]+?)(?:职务|职级)"
+)
 # Xinjiang / Changji-style: "常旭东不再担任…副局长"
 DISMISS_NO_LONGER_RE = re.compile(
     rf"(?P<name>{NAME_RE})不再(?:担任|兼任)(?P<post>[^；。;]+)"
@@ -135,6 +140,9 @@ def _events_from_roster(notice: NoticeMeta, body: str) -> list[AppointmentEvent]
     """Parse verb-less roster lines: 「姓名 国家税务总局…科长」."""
     out: list[AppointmentEvent] = []
     for match in ROSTER_APPOINT_RE.finditer(body):
+        # 「免去许绍华国家税务总局…」— 贪心姓名会吃成「去许绍华」
+        if match.start() > 0 and body[match.start() - 1] == "免":
+            continue
         name = _clean_name(match.group("name"))
         post = match.group("post")
         if not is_plausible_person_name(name):
@@ -294,6 +302,7 @@ def _iter_dismiss_matches(clause: str):
         DISMISS_TONGZHI_RE,
         DISMISS_DE_RE,
         DISMISS_BARE_RE,
+        DISMISS_GLUED_RE,
     ):
         for match in pattern.finditer(clause):
             span = match.span()
@@ -404,7 +413,12 @@ def _valid_name(name: str) -> bool:
 
 
 def _clean_name(name: str) -> str:
-    return re.sub(r"(同志)+$", "", (name or "").strip())
+    text = re.sub(r"(同志)+$", "", (name or "").strip())
+    # Debris from 「免去姓名…」when 「免」was stripped / roster ate 「去」
+    text = re.sub(r"^(?:免去|免)", "", text)
+    if text.startswith("去") and len(text) >= 3:
+        text = text[1:]
+    return text
 
 
 def _focus_body(text: str) -> str:

@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>变动�?· 税局人事检�?/title>
+  <title>变动流 · 税局人事检索</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/app.css?v=28" />
+  <link rel="stylesheet" href="/static/css/app.css?v=36" />
 </head>
 <body class="app" data-page="changes">
   <header class="app-header" id="app-header"></header>
@@ -15,7 +15,7 @@
   <main class="app-main">
     <div class="shell">
       <section class="panel-card" aria-labelledby="changes-heading">
-        <h2 class="panel-heading" id="changes-heading">变动筛�?/h2>
+        <h2 class="panel-heading" id="changes-heading">变动筛选</h2>
         <form class="filter-grid" id="changes-form" autocomplete="off">
           <div class="field">
             <label for="org_level">地区层级</label>
@@ -37,7 +37,7 @@
           </div>
           <div class="field">
             <label for="department">工作科室</label>
-            <input id="department" name="department" type="search" placeholder="可选，�?政策法规�? autocomplete="off" />
+            <input id="department" name="department" type="search" placeholder="可选，如 政策法规处" autocomplete="off" />
           </div>
           <div class="field">
             <label for="change_type">变动类型</label>
@@ -47,7 +47,7 @@
               <option value="dismiss">免职</option>
               <option value="promote">晋升</option>
               <option value="transfer">调任</option>
-              <option value="retire">退�?/option>
+              <option value="retire">退休</option>
               <option value="probation_confirm">试用期满</option>
             </select>
           </div>
@@ -55,7 +55,7 @@
             <button class="btn" type="submit" id="changes-btn">查看</button>
             <button class="btn secondary" type="button" id="reset-btn">重置</button>
           </div>
-          <div class="field field-span-2 watch-only-field">
+          <div class="watch-only-field">
             <label class="checkbox-label" for="watch_only">
               <input id="watch_only" name="watch_only" type="checkbox" />
               仅看我的关注
@@ -66,7 +66,7 @@
         <div class="watch-bar" id="changes-watch-bar" hidden aria-label="关注当前地区"></div>
       </section>
 
-      <div class="results-summary" id="meta">加载中�?/div>
+      <div class="results-summary" id="meta">加载中…</div>
       <div id="rows"></div>
       <div class="status" id="status" hidden></div>
     </div>

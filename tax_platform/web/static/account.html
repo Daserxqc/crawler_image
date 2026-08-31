@@ -3,37 +3,199 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>个人中心 · 税局人事检�?/title>
+  <title>个人中心 - 税务人事检索</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/app.css?v=28" />
+  <link rel="stylesheet" href="/static/css/app.css?v=35" />
 </head>
 <body class="app" data-page="account">
   <header class="app-header" id="app-header"></header>
   <main class="app-main">
-    <div class="shell shell-watch">
-      <section class="panel-card account-card" aria-labelledby="account-heading">
-        <div class="account-hero">
-          <div class="account-avatar" id="account-avatar" aria-hidden="true">�?/div>
-          <div>
-            <h1 class="panel-heading" id="account-heading">个人中心</h1>
-            <p class="muted" id="account-subtitle">管理账号与关�?/p>
+    <div class="shell shell-account">
+      <section class="account-banner" aria-label="个人中心">
+        <div class="account-banner-inner">
+          <div class="account-avatar-lg" id="account-avatar" aria-hidden="true"></div>
+          <div class="account-banner-text">
+            <p class="account-banner-name" id="account-display-name">加载中…</p>
+            <p class="account-banner-sub" id="account-account-line"></p>
+            <p class="account-banner-meta" id="account-meta"></p>
           </div>
         </div>
-
-        <dl class="account-facts" id="account-facts">
-          <div class="status muted">加载中�?/div>
-        </dl>
-
-        <div class="account-actions">
-          <a class="btn" href="/watches">我的关注</a>
-          <button type="button" class="btn secondary" id="account-logout">退出登�?/button>
-        </div>
       </section>
+      <div class="account-layout">
+        <aside class="account-sidebar">
+          <nav class="account-nav" aria-label="导航">
+            <button type="button" class="account-nav-item is-active" data-section="overview">概览</button>
+            <button type="button" class="account-nav-item" data-section="watches">我的关注 <span class="account-nav-badge" id="nav-badge-watches" hidden></span></button>
+            <button type="button" class="account-nav-item" data-section="notify">变动通知 <span class="account-nav-badge" id="nav-badge-notify" hidden></span></button>
+            <button type="button" class="account-nav-item" data-section="settings">账号设置</button>
+            <button type="button" class="account-nav-item" data-section="help">使用帮助</button>
+          </nav>
+        </aside>
+        <div class="account-main">
+          <section class="account-section panel-card is-active" id="section-overview">
+            <header class="account-section-head">
+              <h2 class="account-section-title">概览</h2>
+              <p class="account-section-lead">关注数据、快捷入口与最近动态。</p>
+            </header>
+            <div class="account-stats account-stats-compact">
+              <button type="button" class="stat-card account-stat-link" data-goto="watches"><div class="stat-value" id="stat-watches-total">0</div><div class="stat-label">关注总数</div></button>
+              <button type="button" class="stat-card account-stat-link" data-goto="watches" data-filter="person"><div class="stat-value" id="stat-watches-person">0</div><div class="stat-label">关注人员</div></button>
+              <button type="button" class="stat-card account-stat-link" data-goto="watches" data-filter="org"><div class="stat-value" id="stat-watches-org">0</div><div class="stat-label">关注单位</div></button>
+              <button type="button" class="stat-card account-stat-link" data-goto="notify"><div class="stat-value" id="stat-notify">0</div><div class="stat-label">变动通知</div></button>
+            </div>
+            <div class="account-overview-tools">
+              <a class="account-tool" href="/"><span aria-hidden="true">⌕</span>人员查询</a>
+              <a class="account-tool" href="/changes"><span aria-hidden="true">↻</span>变动流</a>
+              <button type="button" class="account-tool" data-goto="watches"><span aria-hidden="true">★</span>管理关注</button>
+              <button type="button" class="account-tool" data-goto="notify"><span aria-hidden="true">✉</span>查看通知</button>
+            </div>
+            <h3 class="watch-subheading">最近动态</h3>
+            <div class="account-timeline" id="account-timeline"><div class="status muted">加载中…</div></div>
+          </section>
+
+          <section class="account-section panel-card" id="section-watches">
+            <header class="account-section-head">
+              <h2 class="account-section-title">我的关注</h2>
+              <p class="account-section-lead">搜索人员或选择单位关注，支持筛选与取消。</p>
+            </header>
+            <div class="account-quick-add" id="account-quick-add">
+              <h3 class="watch-add-heading">添加关注</h3>
+              <div class="login-method-tabs watch-add-tabs" role="tablist">
+                <button type="button" class="login-method is-active" data-mode="person">关注人员</button>
+                <button type="button" class="login-method" data-mode="bureau">关注单位</button>
+              </div>
+              <div id="qa-panel-person" class="watch-add-panel">
+                <form id="qa-person-form" class="login-form watch-person-form" autocomplete="off">
+                  <div class="field"><label for="qa-person-q">姓名</label><input id="qa-person-q" type="search" placeholder="如 张三" autocomplete="off" /></div>
+                  <button class="btn login-primary watch-submit-btn" type="submit" id="qa-person-search-btn">搜索</button>
+                </form>
+                <div id="qa-person-hits" class="watch-pick-list" hidden></div>
+              </div>
+              <div id="qa-panel-bureau" class="watch-add-panel" hidden>
+                <form id="qa-bureau-form" class="login-form watch-bureau-form" autocomplete="off">
+                  <div class="watch-bureau-fields">
+                    <div class="field"><label for="qa-bureau-level">层级</label><select id="qa-bureau-level"><option value="">全部</option></select></div>
+                    <div class="field"><label for="qa-bureau-pick">单位</label><select id="qa-bureau-pick" required><option value="">请选择单位</option></select></div>
+                  </div>
+                  <button class="btn login-primary watch-submit-btn" type="submit">关注此单位</button>
+                </form>
+              </div>
+              <p class="login-status" id="qa-status" role="status"></p>
+            </div>
+            <div class="account-toolbar">
+              <input id="watch-filter-q" type="search" class="account-filter-input" placeholder="搜索关注名称" />
+              <div class="account-filter-chips">
+                <button type="button" class="account-chip is-active" data-watch-filter="all">全部</button>
+                <button type="button" class="account-chip" data-watch-filter="person">人员</button>
+                <button type="button" class="account-chip" data-watch-filter="org">单位</button>
+              </div>
+            </div>
+            <div id="account-watch-list" class="account-watch-list"><div class="status muted">加载中…</div></div>
+          </section>
+
+          <section class="account-section panel-card" id="section-notify">
+            <header class="account-section-head">
+              <h2 class="account-section-title">变动通知</h2>
+              <p class="account-section-lead">关注对象有新任免时会在此留下提醒。邮箱登录用户还会尝试收到邮件。</p>
+            </header>
+            <p class="account-notify-legend">状态说明：本页始终保留提醒内容。「等待发邮件」= 排队中；「邮件已发出」= 已送达邮箱；「邮件未发出」= 未送达，可在此查看。</p>
+            <div class="account-filter-chips account-notify-filters">
+              <button type="button" class="account-chip is-active" data-notify-filter="all">全部</button>
+              <button type="button" class="account-chip" data-notify-filter="pending">等待发邮件</button>
+              <button type="button" class="account-chip" data-notify-filter="sent">邮件已发出</button>
+              <button type="button" class="account-chip" data-notify-filter="failed">邮件未发出</button>
+            </div>
+            <div id="account-notify-list" class="account-notify-list"><div class="status muted">加载中…</div></div>
+            <div class="account-panel-foot"><button type="button" class="btn secondary" id="notify-load-more" hidden>加载更多</button></div>
+          </section>
+
+          <section class="account-section panel-card" id="section-settings">
+            <header class="account-section-head">
+              <h2 class="account-section-title">账号设置</h2>
+              <p class="account-section-lead">修改昵称、查看登录信息。</p>
+            </header>
+            <div class="account-profile-card">
+              <h3 class="watch-subheading">修改昵称</h3>
+              <p class="muted account-nickname-hint" id="nickname-hint"></p>
+              <form id="nickname-form" class="account-nickname-form" autocomplete="off">
+                <div class="field"><label for="nickname-input">昵称</label><input id="nickname-input" type="text" maxlength="16" placeholder="如：税务小李" /></div>
+                <button type="submit" class="btn login-primary" id="nickname-save-btn">保存昵称</button>
+                <p class="login-status" id="nickname-status" role="status"></p>
+              </form>
+            </div>
+            <div class="account-profile-card">
+              <h3 class="watch-subheading">账号信息</h3>
+              <dl class="account-profile-facts">
+                <div><dt>当前昵称</dt><dd id="setting-nickname">—</dd></div>
+                <div><dt>登录账号</dt><dd id="setting-account">—</dd></div>
+                <div><dt>登录方式</dt><dd id="setting-method">—</dd></div>
+                <div><dt>注册时间</dt><dd id="setting-created">—</dd></div>
+                <div><dt>上次登录</dt><dd id="setting-last-login">—</dd></div>
+                <div><dt>保持登录至</dt><dd id="setting-session">—</dd></div>
+              </dl>
+            </div>
+            <div class="account-profile-card">
+              <h3 class="watch-subheading">通知说明</h3>
+              <ul class="account-help-list compact">
+                <li>关注后仅对新任免生效。</li>
+                <li>手机登录请在本页查看通知；邮箱登录可同时收邮件。</li>
+              </ul>
+            </div>
+            <div class="account-profile-card account-danger-card">
+              <button type="button" class="btn secondary" id="account-rebind">退出并换绑</button>
+              <button type="button" class="btn danger" id="account-logout">退出登录</button>
+            </div>
+          </section>
+          <section class="account-section panel-card" id="section-help">
+            <header class="account-section-head">
+              <h2 class="account-section-title">使用帮助</h2>
+              <p class="account-section-lead">常见操作与问题解答。</p>
+            </header>
+            <div class="account-help-grid">
+              <section class="account-help-block">
+                <h3 class="watch-subheading">如何关注</h3>
+                <ol class="account-help-steps">
+                  <li>在「我的关注」搜索姓名，或按层级选择单位后点击关注。</li>
+                  <li>在 <a href="/">人员查询</a> 打开某人履历，点「关注此人」。</li>
+                  <li>在检索结果按地区筛选后，可关注当前单位或科室。</li>
+                </ol>
+              </section>
+              <section class="account-help-block">
+                <h3 class="watch-subheading">变动通知怎么用</h3>
+                <ol class="account-help-steps">
+                  <li>关注后，只对<strong>新出现的任免</strong>提醒，历史记录不会补发。</li>
+                  <li>所有提醒都保留在「变动通知」；点开可查看摘要全文。</li>
+                  <li>用邮箱登录时，系统还会尝试把摘要发到邮箱；手机登录请在本页查看。</li>
+                  <li>「等待发邮件」「邮件已发出」「邮件未发出」表示邮件投递状态，不影响本页查看。</li>
+                </ol>
+              </section>
+              <section class="account-help-block">
+                <h3 class="watch-subheading">账号与昵称</h3>
+                <ul class="account-help-list compact">
+                  <li>本站使用手机号或邮箱验证码登录，无需记密码。</li>
+                  <li>未设置昵称时，系统自动称呼您为「用户xxxx」或「税务用户xxxx」。</li>
+                  <li>在「账号设置」可修改昵称；留空保存则恢复系统默认。</li>
+                  <li>换绑手机号或邮箱需退出后重新验证；原账号的关注记录不会迁移。</li>
+                </ul>
+              </section>
+              <section class="account-help-block">
+                <h3 class="watch-subheading">常见问题</h3>
+                <dl class="account-faq">
+                  <div><dt>公开检索需要登录吗？</dt><dd>不需要。登录仅用于关注与变动通知。</dd></div>
+                  <div><dt>为什么没收到邮件？</dt><dd>请先在「变动通知」查看是否有记录；手机登录本就不发邮件。</dd></div>
+                  <div><dt>关注后怎么没反应？</dt><dd>只对关注之后的新任免生效，且数据更新可能有短暂延迟。</dd></div>
+                  <div><dt>怎么取消关注？</dt><dd>在「我的关注」列表中点「取消关注」即可。</dd></div>
+                </dl>
+              </section>
+            </div>
+          </section>
+        </div>
+      </div>
     </div>
   </main>
-  <script src="/static/js/common.js?v=17"></script>
-  <script src="/static/js/account.js?v=1"></script>
+  <script src="/static/js/common.js?v=22"></script>
+  <script src="/static/js/account.js?v=7"></script>
 </body>
 </html>

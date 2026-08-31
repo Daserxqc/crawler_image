@@ -20,6 +20,7 @@ from tax_platform.search.query import (
     lookup_department,
     penetrate_department,
     search_people,
+    search_people_page,
     suggest_departments,
     suggest_names,
     suggest_titles,
@@ -31,6 +32,7 @@ from tax_platform.store.anomalies import (
     list_corrections,
     scan_anomalies,
 )
+from tax_platform.store.posts import search_org_posts
 from tax_platform.store.ingest import get_person_profile
 from tax_platform.store.schema import DEFAULT_DB_PATH, connect
 
@@ -117,6 +119,11 @@ def ui_posts() -> FileResponse:
     return _html(STATIC_DIR / "posts.html")
 
 
+@app.get("/posts/view")
+def ui_posts_view() -> FileResponse:
+    return _html(STATIC_DIR / "post_view.html")
+
+
 @app.get("/people/{person_id:path}")
 def ui_person(person_id: str) -> FileResponse:
     """SPA-style: any /people/... path serves the profile shell."""
@@ -147,8 +154,41 @@ def meta_units(
 @app.get("/api/meta/bureaus")
 def meta_bureaus(
     level: str | None = Query(None, description="headquarters|province|city|district"),
+    parent: str | None = Query(None, alias="parent_code", description="上级单位 code"),
+    region: str | None = Query(None, description="地区名，如 上海市"),
 ) -> dict[str, Any]:
+    """单位主数据（org_units）；库空或未同步时回退站点配置。"""
+    from tax_platform.store.org_units import list_org_units, sync_org_units_from_sites
+
+    conn = connect(_db_path())
+    try:
+        sync_org_units_from_sites(conn, force=False)
+        if conn.execute("SELECT COUNT(*) FROM org_units").fetchone()[0] == 0:
+            sync_org_units_from_sites(conn, force=True)
+            conn.commit()
+        items = list_org_units(conn, level=level, parent_code=parent, region=region)
+        if items:
+            return {
+                "items": [
+                    {
+                        "code": u["code"],
+                        "name": u["name"],
+                        "region": u.get("region"),
+                        "level": u["level"],
+                        "parent_code": u.get("parent_code"),
+                    }
+                    for u in items
+                ],
+                "source": "org_units",
+            }
+    finally:
+        conn.close()
+
     sites = list_sites(level)
+    if parent:
+        sites = [s for s in sites if s.parent_code == parent]
+    if region:
+        sites = [s for s in sites if s.region == region]
     return {
         "items": [
             {
@@ -159,7 +199,8 @@ def meta_bureaus(
                 "parent_code": s.parent_code,
             }
             for s in sites
-        ]
+        ],
+        "source": "config",
     }
 
 
@@ -269,8 +310,7 @@ def api_search(
     """多维组合筛选；科室/职务/姓名留空时按地区浏览，全部留空则列出库内人员（分页）。"""
     conn = connect(_db_path())
     try:
-        # limit=0 → full match set so total is not truncated by the page size.
-        all_hits = search_people(
+        total, hits = search_people_page(
             title=title,
             department=department,
             name=name,
@@ -280,15 +320,14 @@ def api_search(
             unit_category=unit_category,
             date_from=date_from,
             date_to=date_to,
-            limit=0,
+            limit=limit,
+            offset=offset,
             conn=conn,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         conn.close()
-    total = len(all_hits)
-    hits = all_hits[offset : offset + limit] if limit > 0 else all_hits[offset:]
     return {"total": total, "offset": offset, "limit": limit, "items": [_slim_hit(h) for h in hits]}
 
 
@@ -495,6 +534,33 @@ def api_changes(
             offset=offset,
             conn=conn,
         )
+    finally:
+        conn.close()
+
+
+@app.get("/api/posts/search")
+def api_posts_search(
+    department: str | None = None,
+    title: str | None = None,
+    bureau: str | None = Query(None, alias="bureau_code"),
+    org_level: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """按科室 / 职务检索岗位列表（含现任、历任人数）。"""
+    conn = connect(_db_path())
+    try:
+        return search_org_posts(
+            department=department,
+            title=title,
+            bureau_code=bureau,
+            org_level=org_level,
+            limit=limit,
+            offset=offset,
+            conn=conn,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         conn.close()
 
