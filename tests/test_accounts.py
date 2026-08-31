@@ -72,8 +72,13 @@ class AccountsApiTests(unittest.TestCase):
         self._login()
         me = self.client.get("/api/auth/me")
         self.assertTrue(me.json()["authenticated"])
-        self.assertEqual(me.json()["user"]["email"], "watcher@example.com")
-        self.assertEqual(me.json()["user"]["account"], "watcher@example.com")
+        user = me.json()["user"]
+        self.assertEqual(user["channel"], "email")
+        self.assertEqual(user["account_masked"], "w***@example.com")
+        self.assertEqual(user["display_name"], "w***@example.com")
+        self.assertNotIn("email", user)
+        self.assertNotIn("phone", user)
+        self.assertNotIn("account", user)
 
         add = self.client.post(
             "/api/watches",
@@ -166,8 +171,9 @@ class AccountsApiTests(unittest.TestCase):
         self.assertEqual(ver2.status_code, 200, ver2.text)
         me = self.client.get("/api/auth/me")
         self.assertTrue(me.json()["authenticated"])
-        self.assertEqual(me.json()["user"]["phone"], phone)
+        self.assertEqual(me.json()["user"]["phone_masked"], "138****8000")
         self.assertEqual(me.json()["user"]["channel"], "phone")
+        self.assertNotIn("phone", me.json()["user"])
 
     def test_phone_mistaken_as_email_still_works(self) -> None:
         """If client forgets channel=phone, 11-digit account must not yield 邮箱格式不正确."""

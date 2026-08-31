@@ -134,8 +134,8 @@ a:hover {
 }
 
 .app-user {
-  color: rgba(232, 240, 244, 0.72);
-  font-size: 0.85rem;
+  color: rgba(232, 240, 244, 0.92);
+  font-size: 1rem;
   max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -148,9 +148,9 @@ a:hover {
   background: transparent;
   color: var(--header-fg);
   border-radius: 8px;
-  padding: 0.35rem 0.75rem;
+  padding: 0.45rem 0.9rem;
   font: inherit;
-  font-size: 0.9rem;
+  font-size: 1rem;
   cursor: pointer;
   text-decoration: none;
 }
@@ -163,6 +163,152 @@ a:hover {
 a.app-auth-btn {
   display: inline-flex;
   align-items: center;
+}
+
+.user-menu {
+  position: relative;
+}
+
+.user-menu-trigger {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.6rem;
+  padding: 0.35rem 0.7rem 0.35rem 0.35rem;
+  border: 1px solid rgba(232, 240, 244, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.user-menu-trigger:hover,
+.user-menu.is-open .user-menu-trigger {
+  border-color: var(--accent);
+  background: rgba(13, 122, 111, 0.25);
+}
+
+.user-menu-avatar {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.user-menu-label {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.user-menu-caret {
+  opacity: 0.75;
+  font-size: 0.85rem;
+}
+
+.user-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.4rem);
+  min-width: 11rem;
+  padding: 0.35rem;
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  z-index: 40;
+  display: grid;
+}
+
+.user-menu-panel[hidden] {
+  display: none !important;
+}
+
+.user-menu-panel a,
+.user-menu-panel button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--ink);
+  text-decoration: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.user-menu-panel a:hover,
+.user-menu-panel button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-hot);
+}
+
+.account-hero {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.account-avatar {
+  width: 3.4rem;
+  height: 3.4rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.account-facts {
+  margin: 0;
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.account-facts > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.account-facts dt {
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+}
+
+.account-facts dd {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
 }
 
 .shell-narrow {

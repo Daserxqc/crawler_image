@@ -99,6 +99,33 @@ def display_account(identity: str) -> str:
     return identity
 
 
+def mask_phone(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone or "")
+    if len(digits) == 11:
+        return f"{digits[:3]}****{digits[-4:]}"
+    if len(digits) >= 7:
+        return f"{digits[:2]}****{digits[-2:]}"
+    return "***"
+
+
+def mask_email(email: str) -> str:
+    value = (email or "").strip()
+    if "@" not in value:
+        return "***"
+    local, _, domain = value.partition("@")
+    if not local:
+        return f"*@{domain}"
+    if len(local) == 1:
+        return f"{local}***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
+def mask_account(channel: str, account: str) -> str:
+    if channel == "phone":
+        return mask_phone(account)
+    return mask_email(account)
+
+
 def _hash_code(identity: str, code: str) -> str:
     raw = f"{identity}:{code}:{secret_key()}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
@@ -109,14 +136,18 @@ def _hash_token(token: str) -> str:
 
 
 def _user_payload(user_id: int, identity: str) -> dict[str, Any]:
+    """Public-facing user object: never expose full phone/email to the client."""
     channel = "phone" if identity.startswith(PHONE_PREFIX) else "email"
     account = display_account(identity)
+    masked = mask_account(channel, account)
     return {
         "id": user_id,
         "channel": channel,
-        "account": account,
-        "email": account if channel == "email" else None,
-        "phone": account if channel == "phone" else None,
+        "display_name": masked,
+        "account_masked": masked,
+        "email_masked": masked if channel == "email" else None,
+        "phone_masked": masked if channel == "phone" else None,
+        "login_method": "手机号" if channel == "phone" else "邮箱",
     }
 
 

@@ -181,6 +181,38 @@ function buildTitleSuggestOptions(items) {
   return options;
 }
 
+function maskPhoneClient(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (digits.length === 11) return `${digits.slice(0, 3)}****${digits.slice(-4)}`;
+  return "***";
+}
+
+function maskEmailClient(email) {
+  const value = String(email || "").trim();
+  const at = value.indexOf("@");
+  if (at < 1) return "***";
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (local.length === 1) return `${local}***@${domain}`;
+  return `${local[0]}***@${domain}`;
+}
+
+function displayUserLabel(user) {
+  if (!user) return "我的账号";
+  if (user.display_name || user.account_masked) {
+    return user.display_name || user.account_masked;
+  }
+  // Fallback if an older API still returns plaintext.
+  if (user.phone) return maskPhoneClient(user.phone);
+  if (user.email) return maskEmailClient(user.email);
+  if (user.account) {
+    return String(user.account).includes("@")
+      ? maskEmailClient(user.account)
+      : maskPhoneClient(user.account);
+  }
+  return "我的账号";
+}
+
 function mountAppHeader(activeId, authState) {
   const el = qs("#app-header");
   if (!el) return;
@@ -192,15 +224,28 @@ function mountAppHeader(activeId, authState) {
   }).join("");
   let authHtml = "";
   if (authState?.authenticated) {
-    const userLabel =
-      authState.user?.account ||
-      authState.user?.email ||
-      authState.user?.phone ||
-      "已登录";
+    const label = displayUserLabel(authState.user);
+    const initial = (authState.user?.login_method || "").includes("手机") ? "手" : "我";
     authHtml = `
-      <a class="app-tab${activeId === "watches" ? " is-active" : ""}" href="/watches">我的关注</a>
-      <span class="app-user" title="${escapeHtml(userLabel)}">${escapeHtml(userLabel)}</span>
-      <button type="button" class="app-auth-btn" id="logout-btn">退出</button>
+      <div class="user-menu" id="user-menu">
+        <button
+          type="button"
+          class="user-menu-trigger"
+          id="user-menu-btn"
+          aria-haspopup="menu"
+          aria-expanded="false"
+          aria-label="账号菜单，当前 ${escapeHtml(label)}"
+        >
+          <span class="user-menu-avatar" aria-hidden="true">${escapeHtml(initial)}</span>
+          <span class="user-menu-label">${escapeHtml(label)}</span>
+          <span class="user-menu-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="user-menu-panel" id="user-menu-panel" role="menu" hidden>
+          <a role="menuitem" href="/account">个人中心</a>
+          <a role="menuitem" href="/watches">我的关注</a>
+          <button type="button" role="menuitem" id="logout-btn">退出登录</button>
+        </div>
+      </div>
     `;
   } else if (activeId === "login") {
     authHtml = `<a class="app-auth-btn" href="/">返回检索</a>`;
@@ -214,11 +259,37 @@ function mountAppHeader(activeId, authState) {
       <div class="app-auth" aria-label="账号">${authHtml}</div>
     </div>
   `;
+  const menu = qs("#user-menu", el);
+  const menuBtn = qs("#user-menu-btn", el);
+  const menuPanel = qs("#user-menu-panel", el);
   const logoutBtn = qs("#logout-btn", el);
+  if (menu && menuBtn && menuPanel) {
+    const closeMenu = () => {
+      menuPanel.hidden = true;
+      menu.classList.remove("is-open");
+      menuBtn.setAttribute("aria-expanded", "false");
+    };
+    const openMenu = () => {
+      menuPanel.hidden = false;
+      menu.classList.add("is-open");
+      menuBtn.setAttribute("aria-expanded", "true");
+    };
+    menuBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (menuPanel.hidden) openMenu();
+      else closeMenu();
+    });
+    document.addEventListener("click", (event) => {
+      if (!menu.contains(event.target)) closeMenu();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeMenu();
+    });
+  }
   if (logoutBtn) {
     logoutBtn.addEventListener("click", async () => {
       await apiPost("/api/auth/logout", {});
-      window.location.reload();
+      window.location.href = "/";
     });
   }
 }

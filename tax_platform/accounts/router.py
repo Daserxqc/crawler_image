@@ -77,6 +77,11 @@ def ui_watches() -> FileResponse:
     return _html("watches.html")
 
 
+@router.get("/account")
+def ui_account() -> FileResponse:
+    return _html("account.html")
+
+
 @router.get("/anomalies", response_model=None)
 def ui_anomalies(request: Request):
     """Admin-only surface: require login; not linked from public nav."""
