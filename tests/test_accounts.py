@@ -73,6 +73,7 @@ class AccountsApiTests(unittest.TestCase):
         me = self.client.get("/api/auth/me")
         self.assertTrue(me.json()["authenticated"])
         self.assertEqual(me.json()["user"]["email"], "watcher@example.com")
+        self.assertEqual(me.json()["user"]["account"], "watcher@example.com")
 
         add = self.client.post(
             "/api/watches",
@@ -135,6 +136,40 @@ class AccountsApiTests(unittest.TestCase):
         for page in pages:
             self.assertEqual(page.status_code, 200)
 
+    def test_gmail_and_phone_login(self) -> None:
+        email = "x15162608130@gmail.com"
+        req = self.client.post(
+            "/api/auth/request-code",
+            json={"channel": "email", "account": email},
+        )
+        self.assertEqual(req.status_code, 200, req.text)
+        self.assertEqual(req.json()["account"], email.lower())
+        code = req.json()["dev_code"]
+        ver = self.client.post(
+            "/api/auth/verify",
+            json={"channel": "email", "account": email, "code": code},
+        )
+        self.assertEqual(ver.status_code, 200, ver.text)
 
-if __name__ == "__main__":
-    unittest.main()
+        self.client.post("/api/auth/logout")
+        phone = "13800138000"
+        req2 = self.client.post(
+            "/api/auth/request-code",
+            json={"channel": "phone", "account": phone},
+        )
+        self.assertEqual(req2.status_code, 200, req2.text)
+        self.assertEqual(req2.json()["phone"], phone)
+        ver2 = self.client.post(
+            "/api/auth/verify",
+            json={"channel": "phone", "account": phone, "code": req2.json()["dev_code"]},
+        )
+        self.assertEqual(ver2.status_code, 200, ver2.text)
+        me = self.client.get("/api/auth/me")
+        self.assertTrue(me.json()["authenticated"])
+        self.assertEqual(me.json()["user"]["phone"], phone)
+        self.assertEqual(me.json()["user"]["channel"], "phone")
+
+        # Anomalies requires login; unauthenticated redirects.
+        self.client.post("/api/auth/logout")
+        anon = self.client.get("/anomalies", follow_redirects=False)
+        self.assertIn(anon.status_code, {302, 307})

@@ -99,7 +99,6 @@ const PAGE_TABS = [
   { id: "search", href: "/", label: "人员查询" },
   { id: "changes", href: "/changes", label: "变动流" },
   { id: "departments", href: "/departments", label: "科室穿透" },
-  { id: "anomalies", href: "/anomalies", label: "异常修正" },
 ];
 
 function levelLabel(id) {
@@ -193,11 +192,14 @@ function mountAppHeader(activeId, authState) {
   }).join("");
   let authHtml = "";
   if (authState?.authenticated) {
+    const userLabel =
+      authState.user?.account ||
+      authState.user?.email ||
+      authState.user?.phone ||
+      "已登录";
     authHtml = `
       <a class="app-tab${activeId === "watches" ? " is-active" : ""}" href="/watches">我的关注</a>
-      <span class="app-user" title="${escapeHtml(authState.user?.email || "")}">${escapeHtml(
-      authState.user?.email || "已登录"
-    )}</span>
+      <span class="app-user" title="${escapeHtml(userLabel)}">${escapeHtml(userLabel)}</span>
       <button type="button" class="app-auth-btn" id="logout-btn">退出</button>
     `;
   } else if (activeId === "login") {

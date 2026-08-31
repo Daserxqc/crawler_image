@@ -221,6 +221,42 @@ a.app-auth-btn {
   line-height: 1.5;
 }
 
+.login-method-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin: 1.2rem 0 1.15rem;
+}
+
+.login-method {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 8px;
+  padding: 0.55rem 0.5rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.login-method.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-hot);
+  font-weight: 600;
+}
+
+.login-method:hover {
+  border-color: rgba(13, 122, 111, 0.45);
+}
+
+.login-panel[hidden],
+.login-form [hidden],
+.field[hidden] {
+  display: none !important;
+}
+
 .login-steps {
   list-style: none;
   margin: 1.25rem 0 1.35rem;

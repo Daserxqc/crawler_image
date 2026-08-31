@@ -1,4 +1,4 @@
-"""Email OTP login + cookie sessions."""
+"""Email / phone OTP login + cookie sessions."""
 
 from __future__ import annotations
 
@@ -13,10 +13,13 @@ from typing import Any
 
 from tax_platform.accounts.schema import connect
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+# Mainland mobile: 1[3-9] + 9 digits; also allow +86 / 86 prefix.
+PHONE_RE = re.compile(r"^(?:\+?86)?(1[3-9]\d{9})$")
 CODE_TTL_MINUTES = 15
 SESSION_DAYS = 30
 COOKIE_NAME = "tax_hr_session"
+PHONE_PREFIX = "phone:"
 
 
 def _now() -> datetime:
@@ -42,8 +45,32 @@ def normalize_email(email: str) -> str:
     return value
 
 
-def _hash_code(email: str, code: str) -> str:
-    raw = f"{email}:{code}:{secret_key()}".encode("utf-8")
+def normalize_phone(phone: str) -> str:
+    raw = (phone or "").strip().replace(" ", "").replace("-", "")
+    match = PHONE_RE.fullmatch(raw)
+    if not match:
+        raise ValueError("手机号格式不正确，请输入 11 位大陆手机号")
+    return match.group(1)
+
+
+def normalize_account(channel: str, account: str) -> tuple[str, str]:
+    """Return (channel, identity_key stored in login_codes / users.email)."""
+    channel = (channel or "email").strip().lower()
+    if channel == "email":
+        return "email", normalize_email(account)
+    if channel in {"phone", "mobile", "sms"}:
+        return "phone", f"{PHONE_PREFIX}{normalize_phone(account)}"
+    raise ValueError("登录方式须为 email 或 phone")
+
+
+def display_account(identity: str) -> str:
+    if identity.startswith(PHONE_PREFIX):
+        return identity[len(PHONE_PREFIX) :]
+    return identity
+
+
+def _hash_code(identity: str, code: str) -> str:
+    raw = f"{identity}:{code}:{secret_key()}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -51,15 +78,35 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(f"{token}:{secret_key()}".encode("utf-8")).hexdigest()
 
 
+def _user_payload(user_id: int, identity: str) -> dict[str, Any]:
+    channel = "phone" if identity.startswith(PHONE_PREFIX) else "email"
+    account = display_account(identity)
+    return {
+        "id": user_id,
+        "channel": channel,
+        "account": account,
+        "email": account if channel == "email" else None,
+        "phone": account if channel == "phone" else None,
+    }
+
+
 def request_login_code(
-    email: str,
+    account: str,
     *,
+    channel: str = "email",
+    email: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """Create a 6-digit OTP for ``email``. Dev mode returns the plaintext code."""
+    """Create a 6-digit OTP. Dev mode returns the plaintext code.
+
+    ``email`` is accepted as an alias of ``account`` for backward compatibility.
+    """
     owns = conn is None
     db = conn or connect()
-    email = normalize_email(email)
+    if email and not account:
+        account = email
+        channel = "email"
+    channel, identity = normalize_account(channel, account)
     code = f"{secrets.randbelow(1_000_000):06d}"
     now = _now()
     expires = now + timedelta(minutes=CODE_TTL_MINUTES)
@@ -68,12 +115,15 @@ def request_login_code(
         INSERT INTO login_codes (email, code_hash, expires_at, created_at)
         VALUES (?, ?, ?, ?)
         """,
-        (email, _hash_code(email, code), _iso(expires), _iso(now)),
+        (identity, _hash_code(identity, code), _iso(expires), _iso(now)),
     )
     db.commit()
     out: dict[str, Any] = {
         "ok": True,
-        "email": email,
+        "channel": channel,
+        "account": display_account(identity),
+        "email": display_account(identity) if channel == "email" else None,
+        "phone": display_account(identity) if channel == "phone" else None,
         "expires_in_seconds": CODE_TTL_MINUTES * 60,
         "dev_mode": is_dev_mode(),
     }
@@ -85,14 +135,19 @@ def request_login_code(
 
 
 def verify_login_code(
-    email: str,
+    account: str,
     code: str,
     *,
+    channel: str = "email",
+    email: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     owns = conn is None
     db = conn or connect()
-    email = normalize_email(email)
+    if email and not account:
+        account = email
+        channel = "email"
+    channel, identity = normalize_account(channel, account)
     code = (code or "").strip()
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("验证码应为 6 位数字")
@@ -106,7 +161,7 @@ def verify_login_code(
         ORDER BY id DESC
         LIMIT 1
         """,
-        (email,),
+        (identity,),
     ).fetchone()
     if row is None:
         raise ValueError("请先获取验证码")
@@ -114,18 +169,18 @@ def verify_login_code(
         raise ValueError("验证码已使用，请重新获取")
     if row["expires_at"] < _iso(now):
         raise ValueError("验证码已过期，请重新获取")
-    if not hmac.compare_digest(row["code_hash"], _hash_code(email, code)):
+    if not hmac.compare_digest(row["code_hash"], _hash_code(identity, code)):
         raise ValueError("验证码不正确")
 
     db.execute(
         "UPDATE login_codes SET consumed_at = ? WHERE id = ?",
         (_iso(now), row["id"]),
     )
-    user = db.execute("SELECT id, email FROM users WHERE email = ?", (email,)).fetchone()
+    user = db.execute("SELECT id, email FROM users WHERE email = ?", (identity,)).fetchone()
     if user is None:
         cur = db.execute(
             "INSERT INTO users (email, created_at, last_login_at) VALUES (?, ?, ?)",
-            (email, _iso(now), _iso(now)),
+            (identity, _iso(now), _iso(now)),
         )
         user_id = int(cur.lastrowid)
     else:
@@ -149,7 +204,7 @@ def verify_login_code(
     out = {
         "ok": True,
         "token": raw_token,
-        "user": {"id": user_id, "email": email},
+        "user": _user_payload(user_id, identity),
         "expires_at": _iso(expires),
     }
     if owns:
@@ -186,7 +241,7 @@ def session_user(
         if owns:
             db.close()
         return None
-    out = {"id": int(row["user_id"]), "email": row["email"]}
+    out = _user_payload(int(row["user_id"]), row["email"])
     if owns:
         db.close()
     return out

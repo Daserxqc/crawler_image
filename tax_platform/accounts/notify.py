@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import Any
 
+from tax_platform.accounts.auth import PHONE_PREFIX, display_account
 from tax_platform.accounts.schema import connect
 from tax_platform.config.sites import get_site
 from tax_platform.normalize.change import classify_change
@@ -147,7 +148,7 @@ def queue_digest(
         """,
         (
             user_id,
-            user["email"],
+            display_account(user["email"]),
             f"【税局人事】您关注的对象有 {len(matches)} 条新变动",
             body,
             json.dumps(event_ids, ensure_ascii=False),
@@ -173,6 +174,11 @@ def smtp_configured() -> bool:
 
 
 def send_outbox_row(row: sqlite3.Row | dict[str, Any]) -> None:
+    to_email = row["to_email"]
+    # Phone-only accounts have no mailbox; queue stays for audit / future SMS.
+    if to_email.isdigit() and len(to_email) == 11:
+        raise RuntimeError("手机号账号暂未配置短信通道，仅记录到发件箱")
+
     host = os.environ.get("SMTP_HOST", "")
     port = int(os.environ.get("SMTP_PORT", "587"))
     user = os.environ.get("SMTP_USER", "")
