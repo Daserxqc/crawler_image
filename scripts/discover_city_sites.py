@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tax_platform.config.manual_skip import filter_parents
 from tax_platform.config.city_discovery import (
     candidates_to_entries,
     discover_city_channel_hubs,
@@ -112,6 +113,9 @@ def main() -> None:
         from tax_platform.config.sites_provinces import PROVINCE_SITES
 
         parents = [s.code for s in PROVINCE_SITES]
+        parents, skipped = filter_parents(parents)
+        if skipped:
+            print(f"[discover] skip manual provinces: {', '.join(skipped)}", flush=True)
     else:
         parents = args.parents or ["shanghai"]
     all_entries: list[dict] = []

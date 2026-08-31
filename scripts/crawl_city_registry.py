@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tax_platform.config.manual_skip import should_skip_auto_crawl
 from tax_platform.config.city_sites_io import DEFAULT_CITY_REGISTRY, load_city_registry
 from tax_platform.config.sites import reload_sites
 from tax_platform.crawler.appointment_job import appointments_payload, crawl_appointments_site
@@ -36,12 +37,30 @@ def main() -> None:
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--skip-appt", action="store_true")
     parser.add_argument("--skip-leader", action="store_true")
+    parser.add_argument(
+        "--skip-parent",
+        action="append",
+        dest="skip_parent",
+        help="parent_code to skip (default: manual-complete provinces like heilongjiang)",
+    )
     parser.add_argument("--registry", type=Path, default=DEFAULT_CITY_REGISTRY)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     reload_sites()
     rows = load_city_registry(args.registry)
+    if args.skip_parent:
+        skip_parents = set(args.skip_parent)
+    elif not args.parents:
+        skip_parents = {
+            code for code in {r.get("parent_code") for r in rows} if code and should_skip_auto_crawl(code)
+        }
+    else:
+        skip_parents = set()
+    if skip_parents:
+        before = len(rows)
+        rows = [r for r in rows if r.get("parent_code") not in skip_parents]
+        logging.info("SKIP parent %s: %s -> %s city sites", sorted(skip_parents), before, len(rows))
     if args.parents:
         parents = set(args.parents)
         rows = [r for r in rows if r.get("parent_code") in parents]
@@ -58,35 +77,43 @@ def main() -> None:
 
     appt_results = []
     lead_results = []
-    for code in codes:
-        if not args.skip_appt:
-            try:
-                result = crawl_appointments_site(
-                    code,
-                    limit=args.limit,
-                    delay=args.delay,
-                    incremental=not args.full,
-                    known_urls=known,
-                )
-                appt_results.append(result)
-                logging.info(
-                    "APPT %s list=%s notices=%s events=%s failed=%s skipped=%s",
-                    code,
-                    result.list_count,
-                    len(result.notices),
-                    len(result.events),
-                    len(result.failed),
-                    result.skipped,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logging.exception("APPT FAIL %s: %s", code, exc)
-        if not args.skip_leader:
-            try:
-                result = crawl_leaders_site(code, delay=args.delay)
-                lead_results.append(result)
-                logging.info("LEAD %s leaders=%s", code, len(result.leaders))
-            except Exception as exc:  # noqa: BLE001
-                logging.exception("LEAD FAIL %s: %s", code, exc)
+    conn = connect(args.db)
+    try:
+        for code in codes:
+            if not args.skip_appt:
+                try:
+                    result = crawl_appointments_site(
+                        code,
+                        limit=args.limit,
+                        delay=args.delay,
+                        incremental=not args.full,
+                        known_urls=known,
+                    )
+                    appt_results.append(result)
+                    logging.info(
+                        "APPT %s list=%s notices=%s events=%s failed=%s skipped=%s",
+                        code,
+                        result.list_count,
+                        len(result.notices),
+                        len(result.events),
+                        len(result.failed),
+                        result.skipped,
+                    )
+                    site_payload = appointments_payload(result)
+                    stats = ingest_appointment_results(site_payload, conn=conn)
+                    conn.commit()
+                    logging.info("ingest %s appointments: %s events", code, stats)
+                except Exception as exc:  # noqa: BLE001
+                    logging.exception("APPT FAIL %s: %s", code, exc)
+            if not args.skip_leader:
+                try:
+                    result = crawl_leaders_site(code, delay=args.delay)
+                    lead_results.append(result)
+                    logging.info("LEAD %s leaders=%s", code, len(result.leaders))
+                except Exception as exc:  # noqa: BLE001
+                    logging.exception("LEAD FAIL %s: %s", code, exc)
+    finally:
+        conn.close()
 
     tag = "_".join(args.parents) if args.parents else "all"
     appt_payload = appointments_payload(appt_results) if appt_results else []
@@ -98,9 +125,6 @@ def main() -> None:
 
     conn = connect(args.db)
     try:
-        if appt_payload:
-            stats = ingest_appointment_results(appt_payload, conn=conn)
-            logging.info("ingest appointments: %s", stats)
         if lead_payload:
             stats = ingest_leader_results(lead_payload, conn=conn)
             logging.info("ingest leaders: %s", stats)

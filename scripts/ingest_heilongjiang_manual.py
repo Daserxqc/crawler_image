@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Archive + ingest Hebei city manual HTML from output/manual/hebei/."""
+"""Archive + ingest Heilongjiang city manual HTML from output/manual/heilongjiang/."""
 
 from __future__ import annotations
 
@@ -28,57 +28,16 @@ from tax_platform.crawler.leader_intro import leader_page_targets, parse_leader_
 from tax_platform.crawler.leader_job import LeaderCrawlResult, leaders_payload
 from tax_platform.models.entities import LeaderDuty
 from tax_platform.normalize.person import is_plausible_person_name
-from tax_platform.crawler.ingest_resume import JOB_HEBEI, ingest_and_checkpoint_city, should_skip_city
-from tax_platform.crawler.resume_state import load_resume_state
-from tax_platform.store.ingest import known_notice_urls
+from tax_platform.store.ingest import ingest_appointment_results, ingest_leader_results, known_notice_urls
 from tax_platform.store.schema import connect
 from tax_platform.store.tenure import recompute_persons
 
-MANUAL = ROOT / "output" / "manual" / "hebei"
+MANUAL = ROOT / "output" / "manual" / "heilongjiang"
 ARCHIVE = MANUAL
-BASE = "http://hebei.chinatax.gov.cn"
-LEADER_SLUG_RE = re.compile(r"hebei\.chinatax\.gov\.cn/(?P<slug>[a-z0-9]+)/", re.I)
-APPT_SLUG_RE = re.compile(r"hebei\.chinatax\.gov\.cn/hbswxxgk/(?P<slug>[a-z]+)/", re.I)
-APPT_LIST_RE = re.compile(
-    r'hbswxxgk/[a-z]+/zdml/1370/1512/1413/right(?:_\d+)?\.html',
-    re.I,
-)
-CITY_RE = re.compile(r"(?:河北省)?(.+?)(?:税务局|政府信息公开)")
+BASE = "http://heilongjiang.chinatax.gov.cn"
+COL_CODE_RE = re.compile(r"/col/col(\d+)/", re.I)
+HIDDEN_RE = re.compile(r'id="(?P<key>[^"]+)"[^>]*>(?P<val>[^<]+)')
 NO_APPT_CODES: frozenset[str] = frozenset()
-
-APPT_SLUG_TO_LEADER_SLUG = {
-    "bd": "bdsw",
-    "ts": "tssw",
-    "dz": "dzsw",
-    "lf": "lfsw",
-    "zjk": "zjksw",
-    "cd": "cdsw",
-    "cz": "czsw",
-    "xaxq": "xaxq",
-    "sjz": "sjzsw",
-    "qhd": "qhdsw",
-    "hs": "hssw",
-    "xj": "xjsw",
-    "xt": "xtsw",
-    "hd": "hdsw",
-}
-
-LEADER_SLUG_TO_CITY = {
-    "bdsw": "保定市",
-    "tssw": "唐山市",
-    "dzsw": "定州市",
-    "lfsw": "廊坊市",
-    "zjksw": "张家口市",
-    "cdsw": "承德市",
-    "czsw": "沧州市",
-    "xaxq": "河北雄安新区",
-    "sjzsw": "石家庄市",
-    "qhdsw": "秦皇岛市",
-    "hssw": "衡水市",
-    "xjsw": "辛集市",
-    "xtsw": "邢台市",
-    "hdsw": "邯郸市",
-}
 
 
 def _read_html(path: Path) -> str:
@@ -95,104 +54,79 @@ def _read_html(path: Path) -> str:
     return best[1] if best else raw.decode("utf-8", errors="replace")
 
 
+def _hidden_map(html: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for m in HIDDEN_RE.finditer(html):
+        out[m.group("key")] = m.group("val").strip()
+    return out
+
+
+def _hidden(html: str, key: str) -> str:
+    return _hidden_map(html).get(key, "")
+
+
 def _saved_url(html: str, fallback: str) -> str:
-    m = re.search(r"<!--\s*saved from url=\([^)]+\)(https?://[^\s>]+)", html, re.I)
+    m = re.search(r'<!--\s*saved from url=\([^)]+\)(https?://[^\s>]+)', html, re.I)
     if m:
         return m.group(1).strip()
-    m = re.search(r"saved from url=\(\d+\)(https?://[^ )\s]+)", html, re.I)
+    m = re.search(r'saved from url=\(\d+\)(https?://[^ )\s]+)', html, re.I)
     if m:
         return m.group(1).strip()
     return fallback
 
 
-def _code_from_leader_slug(slug: str) -> str:
-    if not slug:
+def _abs_col_url(path: str) -> str:
+    path = (path or "").strip()
+    if not path:
         return ""
-    return f"hebei_{slug.lower()}"
+    if path.startswith("http"):
+        return path
+    return f"{BASE}{path if path.startswith('/') else '/' + path}"
 
 
-def _leader_slug_from_html(html: str, filename: str) -> str:
-    url = _saved_url(html, "")
-    m = LEADER_SLUG_RE.search(url)
-    if m and m.group("slug") != "hbswxxgk":
-        return m.group("slug").lower()
-    for slug in sorted(LEADER_SLUG_TO_CITY, key=len, reverse=True):
-        if slug in url.lower() or slug in filename.lower():
-            return slug
-    city_m = CITY_RE.search(filename)
-    if city_m:
-        city = city_m.group(1).strip()
-        for slug, name in LEADER_SLUG_TO_CITY.items():
-            if city in name or name.startswith(city):
-                return slug
-    return ""
+def _code_from_html(html: str, filename: str) -> tuple[str, str]:
+    loc = _hidden_map(html)
+    hub_m = COL_CODE_RE.search(loc.get("col5_url", ""))
+    if hub_m:
+        hub = hub_m.group(1)
+        code = f"heilongjiang_col{hub}"
+        name = loc.get("col5_name") or ""
+        if name and not name.startswith("国家税务总局"):
+            name = f"国家税务总局{name}"
+        return code, name
+    for city in (
+        "大兴安岭地区",
+        "齐齐哈尔市",
+        "哈尔滨市",
+        "牡丹江市",
+        "佳木斯市",
+        "七台河市",
+        "鸡西市",
+        "鹤岗市",
+        "双鸭山市",
+        "大庆市",
+        "伊春市",
+        "黑河市",
+        "绥化市",
+    ):
+        if city in filename:
+            return "", f"国家税务总局黑龙江省{city}税务局"
+    return "", loc.get("col5_name", "")
 
 
-def _appt_slug_from_html(html: str) -> str:
-    url = _saved_url(html, "")
-    m = APPT_SLUG_RE.search(url)
-    return m.group("slug").lower() if m else ""
-
-
-def _bureau_name(slug: str) -> str:
-    city = LEADER_SLUG_TO_CITY.get(slug, "")
-    if not city:
-        return ""
-    if city.startswith("河北"):
-        return f"国家税务总局{city}税务局"
-    return f"国家税务总局{city}税务局"
-
-
-def _is_appt_index_file(html: str, filename: str) -> bool:
-    if "人事任免" in filename and "领导" not in filename:
+def _is_appt_file(html: str, filename: str) -> bool:
+    col1 = _hidden(html, "col1_name")
+    if col1 in ("人事信息", "人事任免"):
         return True
-    if "政府信息公开" in filename and "领导" not in filename:
+    if ("人事信息" in filename or "人事任免" in filename) and "领导" not in filename:
         return True
     return False
 
 
 def _is_leader_file(html: str, filename: str) -> bool:
-    if "领导简介" in filename or "领导专栏" in filename or "-领导简介" in filename:
+    if "领导简介" in filename or "领导专栏" in filename:
         return True
-    col = re.search(r'<meta name="ColumnType" content="([^"]+)"', html)
-    return bool(col and "领导" in col.group(1))
-
-
-def _appt_list_url(index_html: str, appt_slug: str) -> str:
-    m = re.search(
-        rf'hbswxxgk/{re.escape(appt_slug)}/zdml/1370/1512/1413/right\.html',
-        index_html,
-        re.I,
-    )
-    if m:
-        return f"{BASE}/{m.group(0)}"
-    return f"{BASE}/hbswxxgk/{appt_slug}/zdml/1370/1512/1413/right.html"
-
-
-def _appt_list_fragments(appt_index: Path) -> list[Path]:
-    files_dir = appt_index.parent / f"{appt_index.stem}_files"
-    if not files_dir.is_dir():
-        return []
-    frags = sorted(files_dir.glob("right*.html"))
-    if frags:
-        return frags
-    return []
-
-
-def _is_better_appt(new_frags: list[Path], old_frags: list[Path], new_name: str, old_path: Path | None) -> bool:
-    if len(new_frags) > len(old_frags):
-        return True
-    if "人事任免" in new_name and old_path and "人事任免" not in old_path.name:
-        return True
-    return not old_frags and bool(new_frags)
-
-
-def _home_url(slug: str) -> str:
-    if slug == "xaxq":
-        return f"{BASE}/xaxq/"
-    if slug.endswith("sw"):
-        return f"{BASE}/{slug}/"
-    return f"{BASE}/{slug}/"
+    return _hidden(html, "col1_name") in ("领导简介", "领导专栏")
 
 
 def _duty_richness(duty: LeaderDuty) -> tuple[int, int, int]:
@@ -220,7 +154,7 @@ def _classify_files() -> dict[str, dict]:
         sources.append(source_archive)
 
     registry = {
-        e["code"]: e for e in load_city_registry() if str(e.get("code", "")).startswith("hebei_")
+        e["code"]: e for e in load_city_registry() if str(e.get("code", "")).startswith("heilongjiang_col")
     }
 
     for base in sources:
@@ -228,99 +162,58 @@ def _classify_files() -> dict[str, dict]:
             if path.parent not in sources:
                 continue
             html = _read_html(path)
-            if _is_appt_index_file(html, path.name):
-                appt_slug = _appt_slug_from_html(html)
-                leader_slug = APPT_SLUG_TO_LEADER_SLUG.get(appt_slug, "")
-                if not leader_slug:
-                    logging.warning("skip unclassified appt %s (slug=%s)", path.name, appt_slug)
-                    continue
-                code = _code_from_leader_slug(leader_slug)
-                reg = registry.get(code, {})
-                frags = _appt_list_fragments(path)
-                bucket = groups.setdefault(
-                    code,
-                    {
-                        "code": code,
-                        "leader_slug": leader_slug,
-                        "appt_slug": appt_slug,
-                        "name": reg.get("name") or _bureau_name(leader_slug),
-                        "leader_files": [],
-                        "appt_index_html": None,
-                        "appt_list_fragments": [],
-                        "leader_url": reg.get("leader_intro_url", ""),
-                        "appt_url": reg.get("appointment_list_url", ""),
-                        "home_url": reg.get("home_url") or _home_url(leader_slug),
-                    },
-                )
-                if _is_better_appt(
-                    frags,
-                    bucket.get("appt_list_fragments") or [],
-                    path.name,
-                    bucket.get("appt_index_html"),
-                ):
-                    bucket["appt_index_html"] = path
-                    bucket["appt_list_fragments"] = frags
-                    bucket["appt_url"] = _appt_list_url(html, appt_slug)
-                    bucket["appt_slug"] = appt_slug
+            code, bureau_name = _code_from_html(html, path.name)
+            if not code:
+                logging.warning("skip unclassified %s", path.name)
                 continue
-
-            if not _is_leader_file(html, path.name):
-                logging.warning("skip unknown kind %s", path.name)
-                continue
-
-            leader_slug = _leader_slug_from_html(html, path.name)
-            if not leader_slug:
-                logging.warning("skip unclassified leader %s", path.name)
-                continue
-            code = _code_from_leader_slug(leader_slug)
             reg = registry.get(code, {})
             bucket = groups.setdefault(
                 code,
                 {
                     "code": code,
-                    "leader_slug": leader_slug,
-                    "appt_slug": "",
-                    "name": reg.get("name") or _bureau_name(leader_slug),
+                    "name": reg.get("name") or bureau_name,
                     "leader_files": [],
-                    "appt_index_html": None,
-                    "appt_list_fragments": [],
+                    "appt_list_html": None,
                     "leader_url": reg.get("leader_intro_url", ""),
                     "appt_url": reg.get("appointment_list_url", ""),
-                    "home_url": reg.get("home_url") or _home_url(leader_slug),
+                    "home_url": reg.get("home_url", ""),
                 },
             )
-            bucket["leader_files"].append(path)
-            saved = _saved_url(html, "")
-            if saved:
-                bucket["leader_url"] = saved
-
-    for code, bucket in groups.items():
-        appt_slug = bucket.get("appt_slug") or ""
-        for appt_slug_key, leader_slug in APPT_SLUG_TO_LEADER_SLUG.items():
-            if leader_slug == bucket.get("leader_slug"):
-                bucket["appt_slug"] = appt_slug_key
-                appt_slug = appt_slug_key
-                break
-        if appt_slug and not bucket.get("appt_url"):
-            bucket["appt_url"] = f"{BASE}/hbswxxgk/{appt_slug}/zdml/1370/1512/1413/right.html"
-
+            loc = _hidden_map(html)
+            col1_url = _abs_col_url(loc.get("col1_url", ""))
+            col5_url = _abs_col_url(loc.get("col5_url", ""))
+            if col5_url:
+                bucket["home_url"] = col5_url
+            if _is_appt_file(html, path.name):
+                bucket["appt_list_html"] = path
+                if col1_url:
+                    bucket["appt_url"] = col1_url
+            elif _is_leader_file(html, path.name):
+                bucket["leader_files"].append(path)
+                if col1_url:
+                    bucket["leader_url"] = col1_url
+            else:
+                logging.warning("skip unknown kind %s (%s)", path.name, code)
     return groups
 
 
 def _registry_entries(groups: dict[str, dict]) -> list[dict]:
     entries = []
     for code, meta in sorted(groups.items()):
+        home = meta.get("home_url") or ""
+        leader = meta.get("leader_url") or ""
+        appt = meta.get("appt_url") or ""
         entries.append(
             {
                 "code": code,
                 "name": meta["name"],
-                "home_url": meta.get("home_url") or "",
-                "leader_intro_url": meta.get("leader_url") or "",
-                "appointment_list_url": meta.get("appt_url") or "",
+                "home_url": home,
+                "leader_intro_url": leader,
+                "appointment_list_url": appt,
                 "level": "city",
-                "parent_code": "hebei",
-                "region": "河北省",
-                "notes": ["hebei_manual"],
+                "parent_code": "heilongjiang",
+                "region": "黑龙江省",
+                "notes": ["heilongjiang_manual"],
             }
         )
     return entries
@@ -357,26 +250,15 @@ def _archive_group(code: str, meta: dict) -> Path:
         manifest["files"].append(f"leaders/leader_{i}.html")
 
     appt_archived = None
-    if meta.get("appt_index_html"):
-        appt_archived = dest / "appt_index.html"
-        src = meta["appt_index_html"]
+    if meta.get("appt_list_html"):
+        appt_archived = dest / "appt_list.html"
+        src = meta["appt_list_html"]
         if src.resolve() != appt_archived.resolve():
             shutil.copy2(src, appt_archived)
-        manifest["files"].append("appt_index.html")
-
-    appt_list_dir = dest / "appt_list"
-    appt_list_dir.mkdir(exist_ok=True)
-    archived_frags: list[Path] = []
-    for i, src in enumerate(meta.get("appt_list_fragments") or []):
-        target = appt_list_dir / f"right_{i}.html"
-        if src.resolve() != target.resolve():
-            shutil.copy2(src, target)
-        archived_frags.append(target)
-        manifest["files"].append(f"appt_list/right_{i}.html")
+        manifest["files"].append("appt_list.html")
 
     meta["archived_leaders"] = archived_leaders
-    meta["archived_appt_index"] = appt_archived
-    meta["archived_appt_frags"] = archived_frags
+    meta["archived_appt_list"] = appt_archived
     (dest / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return dest
 
@@ -387,8 +269,8 @@ def _archive_source_files(groups: dict[str, dict]) -> None:
     paths: set[Path] = set()
     for meta in groups.values():
         paths.update(meta.get("leader_files") or [])
-        if meta.get("appt_index_html"):
-            paths.add(meta["appt_index_html"])
+        if meta.get("appt_list_html"):
+            paths.add(meta["appt_list_html"])
     for path in sorted(paths):
         if not path.exists() or path.parent != MANUAL:
             continue
@@ -429,7 +311,7 @@ def _parse_leaders(code: str, paths: list[Path], *, try_fetch: bool) -> tuple[Le
                 if key in seen_urls:
                     continue
                 seen_urls.add(key)
-                if not re.search(r"/(art|t\d+_)/", url):
+                if not re.search(r"/art/\d+/", url):
                     continue
                 try:
                     time.sleep(0.25)
@@ -454,23 +336,6 @@ def _parse_leaders(code: str, paths: list[Path], *, try_fetch: bool) -> tuple[Le
     )
 
 
-def _parse_appointment_list(meta: dict) -> tuple[str, list]:
-    list_url = meta.get("appt_url") or ""
-    items = []
-    seen: set[str] = set()
-    for path in meta.get("archived_appt_frags") or []:
-        html = _read_html(path)
-        frag_url = _saved_url(html, list_url)
-        if frag_url and APPT_LIST_RE.search(frag_url):
-            list_url = frag_url.rsplit("/", 1)[0] + "/right.html"
-        for item in parse_appointment_list(html, list_url or frag_url):
-            if item.source_url in seen:
-                continue
-            seen.add(item.source_url)
-            items.append(item)
-    return list_url, items
-
-
 def _parse_appointments(
     code: str,
     meta: dict,
@@ -481,10 +346,13 @@ def _parse_appointments(
     if code in NO_APPT_CODES:
         return AppointmentCrawlResult(bureau=code, list_url="", list_count=0)
 
-    list_url, items = _parse_appointment_list(meta)
-    if not items and not (meta.get("archived_appt_frags") or meta.get("archived_appt_index")):
-        return AppointmentCrawlResult(bureau=code, list_url=list_url, list_count=0)
+    path = meta.get("archived_appt_list")
+    if path is None or not path.exists():
+        return AppointmentCrawlResult(bureau=code, list_url="", list_count=0)
 
+    html = _read_html(path)
+    list_url = _saved_url(html, f"file:///{path.as_posix()}")
+    items = parse_appointment_list(html, list_url)
     notices = []
     events = []
     failed = []
@@ -538,20 +406,11 @@ def main() -> None:
     parser.add_argument("--try-fetch", action="store_true")
     parser.add_argument("--archive-source", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Skip cities already checkpointed in output/_resume_state.json",
-    )
-    parser.add_argument("--codes", nargs="+", metavar="CODE")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     groups = _classify_files()
-    if args.codes:
-        only = frozenset(args.codes)
-        groups = {k: v for k, v in groups.items() if k in only}
-    logging.info("classified %s Hebei cities", len(groups))
+    logging.info("classified %s Heilongjiang cities", len(groups))
     patched = _patch_registry(groups)
     logging.info("patched %s registry entries", patched)
 
@@ -570,8 +429,7 @@ def main() -> None:
                 "code": code,
                 "name": meta["name"],
                 "leader_files": len(meta.get("leader_files") or []),
-                "appt_frags": len(meta.get("appt_list_fragments") or []),
-                "has_appt": code not in NO_APPT_CODES and bool(meta.get("appt_list_fragments")),
+                "has_appt": code not in NO_APPT_CODES and bool(meta.get("appt_list_html")),
             }
         )
 
@@ -584,16 +442,11 @@ def main() -> None:
     known = known_notice_urls(conn=conn)
     conn.close()
 
-    resume_state = load_resume_state()
     appt_results = []
     lead_results = []
     for code, meta in sorted(groups.items()):
-        if should_skip_city(resume_state, JOB_HEBEI, code, resume=args.resume):
-            continue
         leaders = meta.get("archived_leaders") or []
         lead_n = appt_list_n = appt_events_n = 0
-        lr = None
-        ar = None
         if leaders:
             lr, missing = _parse_leaders(code, leaders, try_fetch=args.try_fetch)
             lead_results.append(lr)
@@ -617,30 +470,31 @@ def main() -> None:
                 len(ar.events),
                 len(ar.failed),
             )
-        city_stats = {
+        report["stats"][code] = {
             "name": meta["name"],
-            "city": LEADER_SLUG_TO_CITY.get(meta.get("leader_slug", ""), ""),
             "leaders": lead_n,
             "appt_list": appt_list_n,
             "appt_events": appt_events_n,
         }
-        report["stats"][code] = city_stats
-        ingest_and_checkpoint_city(
-            code,
-            lr,
-            ar,
-            db=args.db,
-            job_id=JOB_HEBEI,
-            resume_state=resume_state,
-            stats=city_stats,
-        )
 
     appt_payload = appointments_payload(appt_results) if appt_results else []
     lead_payload = leaders_payload(lead_results) if lead_results else []
     if appt_payload:
-        dump_json("output/hebei_manual_appointments.json", appt_payload)
+        dump_json("output/heilongjiang_manual_appointments.json", appt_payload)
     if lead_payload:
-        dump_json("output/hebei_manual_leaders.json", lead_payload)
+        dump_json("output/heilongjiang_manual_leaders.json", lead_payload)
+
+    conn = connect(args.db)
+    try:
+        if appt_payload:
+            logging.info("ingest appt %s", ingest_appointment_results(appt_payload, conn=conn))
+        if lead_payload:
+            logging.info("ingest lead %s", ingest_leader_results(lead_payload, conn=conn))
+        n = recompute_persons(conn)
+        conn.commit()
+        logging.info("recomputed %s persons", n)
+    finally:
+        conn.close()
 
     report_path = ARCHIVE / "ingest_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

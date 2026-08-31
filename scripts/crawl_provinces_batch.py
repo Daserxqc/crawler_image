@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tax_platform.config.manual_skip import should_skip_auto_crawl
 from tax_platform.config.sites_provinces import PROVINCE_SUBDOMAINS
 
 PROVINCE_CODES = [code for _sub, _region, code in PROVINCE_SUBDOMAINS if code != "shanghai"]
@@ -62,6 +63,9 @@ def main() -> None:
     args = parse_args()
     skip = set(args.skip or [])
     skip.add("guangdong")  # already done with known overrides
+    for code in PROVINCE_CODES:
+        if should_skip_auto_crawl(code):
+            skip.add(code)
 
     if args.only:
         codes = [c for c in args.only if c in PROVINCE_CODES]
