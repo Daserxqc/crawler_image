@@ -95,8 +95,10 @@
 启动：`python scripts/run_api.py`（文档见 `/docs`）
 
 ### PR10 — 个人关注与邮件（需登录）
-25. 用户账号与关注设置
-26. 变动邮件推送（前后对比 + 原文链接）
+25. 用户账号与关注设置 — 邮箱 OTP 登录（`accounts/auth.py`）、关注人员/单位（`/watches`、人员页「关注」）
+26. 变动邮件推送（前后对比 + 原文链接）— `accounts/notify.py`、`scripts/notify_watches.py`；未配 SMTP 时写入 `email_outbox`（dry_run）
+
+异常管理页：`/anomalies`（扫描 / 忽略 / 姓名修正）
 
 ---
 

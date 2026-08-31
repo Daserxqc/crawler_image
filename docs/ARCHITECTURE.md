@@ -1,26 +1,23 @@
 # 整体设计
 
-公开检索与登录拆成两套平面。现在只做公开平面；登录后做、单独成模块。
+公开检索与登录拆成两套平面。公开平面已落地；账号平面（登录 / 关注 / 邮件）在 `tax_platform/accounts/`，由 `web.app` 通过 `mount_accounts` 挂路由，**crawler / normalize / store / search 不 import accounts**。
 
 ## 两套平面
 
 ```
-公开平面（无登录，先做）                账号平面（后做）
+公开平面（无登录）                      账号平面（PR10）
 -------------------------              -------------------------
 采集 / 清洗 / 入库 / 检索               tax_platform/accounts/
-公开变动流 / 岗位现任历任 / 导出        登录、关注单位或人、邮件推送
-任何人打开即用                         不倒灌进 crawler / normalize / store / search / web
+公开变动流 / 岗位现任历任 / 导出        邮箱 OTP 登录、关注单位或人、邮件队列
+任何人打开即用                         只读订阅 appointment_events；SMTP 可选
 ```
 
-`accounts/` 只预留包说明，暂不实现。公开代码不得 `import tax_platform.accounts`。  
-以后接登录时：顶栏右侧加入口，关注按钮挂在人员/单位页；邮件只订阅 store 里已发布的变动事件。
-
-数据单向流：
+账号路由挂在同一 FastAPI 进程（`/login`、`/watches`、`/api/auth/*`、`/api/watches/*`），但业务代码边界仍单向：
 
 ```
 官网 → crawler → normalize → store → search / web
                                       ↑
-                               accounts 只读订阅（后做）
+                               accounts 只读订阅 + 写自己的表
 ```
 
 ## 目录

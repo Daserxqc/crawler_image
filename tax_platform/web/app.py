@@ -610,6 +610,11 @@ def api_corrections_list(
         conn.close()
 
 
+# Account plane (PR10) — mounted before static so /login|/watches|/anomalies win.
+from tax_platform.accounts import mount_accounts
+
+mount_accounts(app)
+
 # Static assets last so /api and HTML routes take precedence.
 if STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

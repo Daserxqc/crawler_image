@@ -4,7 +4,34 @@ async function apiGet(path, params = {}) {
     if (value === undefined || value === null || String(value).trim() === "") return;
     url.searchParams.set(key, value);
   });
-  const res = await fetch(url);
+  const res = await fetch(url, { credentials: "same-origin" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    const msg = typeof detail === "string" ? detail : res.statusText || "请求失败";
+    throw new Error(msg);
+  }
+  return data;
+}
+
+async function apiPost(path, body = {}) {
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    const msg = typeof detail === "string" ? detail : res.statusText || "请求失败";
+    throw new Error(msg);
+  }
+  return data;
+}
+
+async function apiDelete(path) {
+  const res = await fetch(path, { method: "DELETE", credentials: "same-origin" });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = data.detail;
@@ -72,11 +99,7 @@ const PAGE_TABS = [
   { id: "search", href: "/", label: "人员查询" },
   { id: "changes", href: "/changes", label: "变动流" },
   { id: "departments", href: "/departments", label: "科室穿透" },
-];
-
-const FUTURE_NAV = [
-  { label: "动态推送", title: "需登录，开发中" },
-  { label: "我的关注", title: "需登录，开发中" },
+  { id: "anomalies", href: "/anomalies", label: "异常修正" },
 ];
 
 function levelLabel(id) {
@@ -159,7 +182,7 @@ function buildTitleSuggestOptions(items) {
   return options;
 }
 
-function mountAppHeader(activeId) {
+function mountAppHeader(activeId, authState) {
   const el = qs("#app-header");
   if (!el) return;
   const tabs = PAGE_TABS.map((tab) => {
@@ -168,17 +191,32 @@ function mountAppHeader(activeId) {
       active ? ' aria-current="page"' : ""
     }>${escapeHtml(tab.label)}</a>`;
   }).join("");
-  const future = FUTURE_NAV.map(
-    (item) =>
-      `<span class="app-future" title="${escapeHtml(item.title)}" tabindex="0">${escapeHtml(item.label)}</span>`
-  ).join("");
+  let authHtml = "";
+  if (authState?.authenticated) {
+    authHtml = `
+      <a class="app-tab${activeId === "watches" ? " is-active" : ""}" href="/watches">我的关注</a>
+      <span class="app-user" title="${escapeHtml(authState.user?.email || "")}">${escapeHtml(
+      authState.user?.email || "已登录"
+    )}</span>
+      <button type="button" class="app-auth-btn" id="logout-btn">退出</button>
+    `;
+  } else {
+    authHtml = `<a class="app-auth-btn" href="/login">登录</a>`;
+  }
   el.innerHTML = `
     <div class="app-header-inner">
       <a class="app-brand" href="/">税局人事检索</a>
       <nav class="app-tabs" aria-label="功能导航">${tabs}</nav>
-      <div class="app-future-nav" aria-label="即将上线">${future}</div>
+      <div class="app-auth" aria-label="账号">${authHtml}</div>
     </div>
   `;
+  const logoutBtn = qs("#logout-btn", el);
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", async () => {
+      await apiPost("/api/auth/logout", {});
+      window.location.reload();
+    });
+  }
 }
 
 function renderStatsStrip(container, stats) {
@@ -208,5 +246,9 @@ function renderStatsStrip(container, stats) {
 
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
-  if (page) mountAppHeader(page);
+  if (!page) return;
+  mountAppHeader(page, null);
+  apiGet("/api/auth/me")
+    .then((me) => mountAppHeader(page, me))
+    .catch(() => mountAppHeader(page, { authenticated: false }));
 });

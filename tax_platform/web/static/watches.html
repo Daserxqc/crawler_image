@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>我的关注 · 税局人事检索</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css?v=23" />
+</head>
+<body class="app" data-page="watches">
+  <header class="app-header" id="app-header"></header>
+  <main class="app-main">
+    <div class="shell">
+      <section class="panel-card" aria-labelledby="watch-heading">
+        <h1 class="panel-heading" id="watch-heading">我的关注</h1>
+        <p class="muted">按人员或单位订阅；有新任免公告时写入邮件队列（配置 SMTP 后可实发）。</p>
+        <form id="watch-form" class="filter-grid" autocomplete="off">
+          <div class="field">
+            <label for="target_type">关注类型</label>
+            <select id="target_type" name="target_type">
+              <option value="person">人员</option>
+              <option value="bureau">单位</option>
+            </select>
+          </div>
+          <div class="field field-span-2">
+            <label for="target_id">标识</label>
+            <input id="target_id" name="target_id" required placeholder="人员：bureau:姓名 或 姓名；单位：站点 code，如 pdtax" />
+          </div>
+          <div class="field">
+            <label for="label">显示名（可选）</label>
+            <input id="label" name="label" placeholder="便于识别的名称" />
+          </div>
+          <div class="filter-actions">
+            <button class="btn" type="submit">添加关注</button>
+            <button class="btn secondary" type="button" id="notify-btn">试跑推送</button>
+          </div>
+        </form>
+        <p class="status muted" id="watch-status" role="status"></p>
+        <div id="watch-list" class="result-list"></div>
+      </section>
+      <section class="panel-card" aria-labelledby="outbox-heading">
+        <h2 class="panel-heading" id="outbox-heading">最近邮件队列</h2>
+        <div id="outbox-list" class="result-list"></div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/js/common.js?v=12"></script>
+  <script src="/static/js/watches.js?v=1"></script>
+</body>
+</html>

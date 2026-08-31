@@ -72,6 +72,7 @@
       root.innerHTML = `
         <div class="profile-toolbar">
           <button type="button" class="btn secondary" id="back-btn" aria-label="返回上一页">← 返回</button>
+          <button type="button" class="btn" id="watch-btn" aria-label="关注此人">关注此人</button>
         </div>
         <div class="profile-header">
           <div>
@@ -107,6 +108,48 @@
         </section>
       `;
       qs("#back-btn").addEventListener("click", handleBack);
+      const watchBtn = qs("#watch-btn");
+      if (watchBtn) {
+        const targetId = profile.id || personId;
+        apiGet("/api/auth/me")
+          .then(async (me) => {
+            if (!me.authenticated) {
+              watchBtn.textContent = "登录后关注";
+              watchBtn.addEventListener("click", () => {
+                window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+              });
+              return;
+            }
+            const check = await apiGet("/api/watches/check", {
+              target_type: "person",
+              target_id: targetId,
+            });
+            if (check.watching) {
+              watchBtn.textContent = "已关注";
+              watchBtn.classList.add("secondary");
+              watchBtn.addEventListener("click", async () => {
+                if (check.watch?.id) {
+                  await apiDelete(`/api/watches/${check.watch.id}`);
+                  watchBtn.textContent = "关注此人";
+                  watchBtn.classList.remove("secondary");
+                }
+              });
+              return;
+            }
+            watchBtn.addEventListener("click", async () => {
+              await apiPost("/api/watches", {
+                target_type: "person",
+                target_id: targetId,
+                label: profile.name,
+              });
+              watchBtn.textContent = "已关注";
+              watchBtn.classList.add("secondary");
+            });
+          })
+          .catch(() => {
+            watchBtn.hidden = true;
+          });
+      }
     })
     .catch((err) => {
       root.innerHTML = `
