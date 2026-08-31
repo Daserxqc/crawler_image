@@ -200,6 +200,8 @@ function mountAppHeader(activeId, authState) {
     )}</span>
       <button type="button" class="app-auth-btn" id="logout-btn">退出</button>
     `;
+  } else if (activeId === "login") {
+    authHtml = `<a class="app-auth-btn" href="/">返回检索</a>`;
   } else {
     authHtml = `<a class="app-auth-btn" href="/login">登录</a>`;
   }
