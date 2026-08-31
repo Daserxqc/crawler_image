@@ -7,3 +7,7 @@ venv/
 *.log
 .DS_Store
 Thumbs.db
+
+# One-off debug / probe scripts at repo root
+/_*.py
+/_*.txt

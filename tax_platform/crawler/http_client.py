@@ -28,6 +28,13 @@ REFRESH_RE = re.compile(
     r'content=["\']?\s*\d+\s*;\s*url\s*=\s*([^"\'>\s]+)',
     re.IGNORECASE,
 )
+# Chongqing qxtax /ldjj/ index shells redirect via JS, e.g.
+# window.location.href="./202606/t20260608_383268.html"
+JS_LOCATION_RE = re.compile(
+    r"""window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]"""
+    r"""|window\.location\.replace\(\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
 
 # Ruishu / similar WAF JS challenge markers (HTTP 412 body).
 _WAF_MARKERS = ("$_ts", "nsd=", "arg1=", "document.createElement(\"section\")")
@@ -100,6 +107,14 @@ def looks_like_waf_challenge(html: str, *, status_code: int | None = None) -> bo
     sample = html[:8000]
     if "$_ts" in sample and len(html) < 12_000:
         return True
+    # Liaoning / some provincial sites: tiny HTML shell with only obfuscated JS.
+    if len(html) < 4_000:
+        lowered = sample.lower()
+        if "<body><script" in lowered.replace(" ", "") or (
+            "<script" in lowered and "</body></html>" in lowered and len(html) < 2_500
+        ):
+            if not any(marker in html for marker in _REAL_CONTENT_MARKERS):
+                return True
     hits = sum(1 for marker in _WAF_MARKERS if marker in sample)
     return hits >= 2 and len(html) < 80_000
 
@@ -449,7 +464,9 @@ def fetch_html(
         raise RuntimeError(f"Failed to fetch {url}\n" + "\n".join(errors)) from last_error
 
     if follow_meta_refresh:
-        refresh_url = extract_meta_refresh_url(html, final_url)
+        refresh_url = extract_meta_refresh_url(html, final_url) or extract_js_redirect_url(
+            html, final_url
+        )
         if refresh_url and refresh_url != final_url:
             return fetch_html(
                 session,
@@ -476,6 +493,27 @@ def extract_meta_refresh_url(html: str, base_url: str) -> str | None:
     if not target:
         return None
     return urljoin(ensure_trailing_slash(base_url) if "./" in target or target.startswith(".") else base_url, target)
+
+
+def extract_js_redirect_url(html: str, base_url: str) -> str | None:
+    """Follow trivial ``window.location`` redirects used by some column index pages."""
+    match = JS_LOCATION_RE.search(html or "")
+    if not match:
+        return None
+    target = (match.group(1) or match.group(2) or "").strip()
+    if not target or target.startswith(("javascript:", "data:")):
+        return None
+    # Tianjin mobile shells: window.location="p"+url.substr(...) — do NOT treat "p" as a redirect.
+    tail = (html or "")[match.end() : match.end() + 1]
+    if tail == "+":
+        return None
+    if target in {"p", "m"}:
+        return None
+    # Ignore redirects that are clearly WAF/challenge loops to the same path.
+    return urljoin(
+        ensure_trailing_slash(base_url) if "./" in target or target.startswith(".") else base_url,
+        target,
+    )
 
 
 def resolve_list_child_url(list_url: str, href: str) -> str:

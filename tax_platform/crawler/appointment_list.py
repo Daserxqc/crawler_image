@@ -12,9 +12,9 @@ from tax_platform.crawler.http_client import resolve_list_child_url
 
 DATE_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
 SKIP_TITLE_KEYWORDS = ("招录", "招聘", "体检", "公示", "面试", "成绩")
-KEEP_TITLE_KEYWORDS = ("任免", "任职", "免去", "免职")
+KEEP_TITLE_KEYWORDS = ("任免", "任命", "任职", "免去", "免职")
 # Nav crumbs that match KEEP_TITLE_KEYWORDS but are not notice titles
-SKIP_EXACT_TITLES = {"人事任免", "人事信息", "任免", "任职信息"}
+SKIP_EXACT_TITLES = {"人事任免", "人事信息", "任免", "任职信息", "人事管理"}
 LIST_PATH_SUFFIXES = (
     "/rsrm",
     "/rsxx",
@@ -67,7 +67,12 @@ def parse_appointment_list(html: str, list_url: str) -> list[AppointmentListItem
 
 
 def _is_appointment_title(title: str, href: str = "") -> bool:
+    # Hebei XXGK lists: every row title is literally「人事任免」; href is the notice.
     if title.strip() in SKIP_EXACT_TITLES:
+        if title.strip() == "人事任免" and re.search(
+            r"/t\d{8}_\d+\.(?:s?html?|htm)$", href, re.I
+        ):
+            return True
         return False
     if LIST_TITLE_RE.search(title):
         return False

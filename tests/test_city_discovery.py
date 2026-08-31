@@ -62,6 +62,195 @@ class CityDiscoveryTests(unittest.TestCase):
         self.assertEqual(by_code["shandong_col40"].name, "国家税务总局济南市税务局")
         self.assertIn("/col/col40/", by_code["shandong_col40"].home_url)
 
+    def test_district_channel_hubs_chongqing_style(self) -> None:
+        html = """
+        <div class="footer">
+          <span>区县频道</span>
+          <ul>
+            <li><a href="/qxtax/wz/">万州区</a></li>
+            <li><a href="/qxtax/yz/">渝中区</a></li>
+            <li><a href="/qxtax/qj/">黔江区</a></li>
+          </ul>
+        </div>
+        """
+        hubs = discover_city_channel_hubs(
+            html,
+            "https://chongqing.chinatax.gov.cn/cqtax/",
+            parent_code="chongqing",
+            region="重庆市",
+        )
+        by_code = {c.code: c for c in hubs}
+        self.assertIn("chongqing_qxtax_wz", by_code)
+        self.assertEqual(by_code["chongqing_qxtax_wz"].level, "district")
+        self.assertIn("/qxtax/wz/", by_code["chongqing_qxtax_wz"].home_url)
+
+    def test_city_channel_hubs_zhejiang_slug_paths(self) -> None:
+        html = """
+        <div class="footer">
+          <span>市局频道</span>
+          <ul>
+            <li><a href="/hangzhou/index.html">杭州市</a></li>
+            <li><a href="/wenzhou/index.html">温州市</a></li>
+            <li><a href="/shaoxing/index.html">绍兴市</a></li>
+          </ul>
+        </div>
+        """
+        hubs = discover_city_channel_hubs(
+            html,
+            "https://zhejiang.chinatax.gov.cn/",
+            parent_code="zhejiang",
+            region="浙江省",
+        )
+        by_code = {c.code: c for c in hubs}
+        self.assertIn("zhejiang_path_hangzhou", by_code)
+        self.assertEqual(by_code["zhejiang_path_hangzhou"].name, "国家税务总局杭州市税务局")
+
+    def test_city_channel_hubs_guangdong_gdsw_paths(self) -> None:
+        html = """
+        <div class="footer">
+          <span>市局频道</span>
+          <ul>
+            <li><a href="/gdsw/gzsw/gzsw_index.shtml">广州</a></li>
+            <li><a href="/gdsw/zhsw/zhsw_index.shtml">珠海</a></li>
+            <li><a href="/gdsw/stsw/stsw_index.shtml">汕头</a></li>
+          </ul>
+        </div>
+        """
+        hubs = discover_city_channel_hubs(
+            html,
+            "https://guangdong.chinatax.gov.cn/gdsw/index.shtml",
+            parent_code="guangdong",
+            region="广东省",
+        )
+        by_code = {c.code: c for c in hubs}
+        self.assertIn("guangdong_gd_gzsw", by_code)
+        self.assertIn("/gdsw/gzsw/", by_code["guangdong_gd_gzsw"].home_url)
+
+    def test_city_channel_hubs_fujian_sswj_paths(self) -> None:
+        html = """
+        <div class="footer">
+          <span>市局频道</span>
+          <ul>
+            <li><a href="/fzsswj/">福州</a></li>
+            <li><a href="/zzsswj/">漳州</a></li>
+            <li><a href="/qzsswj/">泉州</a></li>
+          </ul>
+        </div>
+        """
+        hubs = discover_city_channel_hubs(
+            html,
+            "https://fujian.chinatax.gov.cn/",
+            parent_code="fujian",
+            region="福建省",
+        )
+        by_code = {c.code: c for c in hubs}
+        self.assertIn("fujian_fj_fzsswj", by_code)
+        self.assertIn("/fzsswj/", by_code["fujian_fj_fzsswj"].home_url)
+
+    def test_city_channel_hubs_hubei_script_labels(self) -> None:
+        html = """
+        <div class="footer">
+          <span>市州频道</span>
+          <ul>
+            <li><a href="/hbsw/wuhan/index.html" target="_blank">
+              <script type="text/javascript">
+              document.write('武汉市税务局'.split("市税务局")[0].split("省税务局")[0].split("税务局")[0])
+              </script>
+            </a></li>
+            <li><a href="/hbsw/xiangyang/index.html" target="_blank">
+              <script type="text/javascript">
+              document.write('襄阳市税务局'.split("市税务局")[0].split("省税务局")[0].split("税务局")[0])
+              </script>
+            </a></li>
+            <li><a href="/hbsw/yichang/index.html" target="_blank">
+              <script type="text/javascript">
+              document.write('宜昌市税务局'.split("市税务局")[0].split("省税务局")[0].split("税务局")[0])
+              </script>
+            </a></li>
+          </ul>
+        </div>
+        """
+        hubs = discover_city_channel_hubs(
+            html,
+            "http://hubei.chinatax.gov.cn/",
+            parent_code="hubei",
+            region="湖北省",
+        )
+        by_code = {c.code: c for c in hubs}
+        self.assertIn("hubei_hbsw_wuhan", by_code)
+        self.assertEqual(by_code["hubei_hbsw_wuhan"].name, "国家税务总局武汉市税务局")
+        self.assertIn("/hbsw/wuhan/", by_code["hubei_hbsw_wuhan"].home_url)
+
+    def test_hubei_hbsw_xxgk_guess_urls(self) -> None:
+        from tax_platform.config.city_discovery import _guess_hbsw_xxgk_urls
+
+        appt, leader = _guess_hbsw_xxgk_urls(
+            "http://hubei.chinatax.gov.cn/hbsw/wuhan/index.html"
+        )
+        self.assertEqual(
+            appt,
+            "http://hubei.chinatax.gov.cn/hbsw/wuhan/xxgk/rsrm/index.html",
+        )
+        self.assertEqual(
+            leader,
+            "http://hubei.chinatax.gov.cn/hbsw/wuhan/xxgk/ldjj/index.html",
+        )
+
+    def test_accept_hbsw_appointment_rejects_xxgk_index(self) -> None:
+        from tax_platform.config.city_discovery import _accept_as_appointment_url
+
+        cand = CitySiteCandidate(
+            code="hubei_hbsw_wuhan",
+            name="国家税务总局武汉市税务局",
+            level="city",
+            parent_code="hubei",
+            home_url="http://hubei.chinatax.gov.cn/hbsw/wuhan/index.html",
+        )
+        self.assertFalse(
+            _accept_as_appointment_url(
+                "http://hubei.chinatax.gov.cn/hbsw/wuhan/xxgk/index.html",
+                cand,
+            )
+        )
+        self.assertTrue(
+            _accept_as_appointment_url(
+                "http://hubei.chinatax.gov.cn/hbsw/wuhan/xxgk/rsrm/index.html",
+                cand,
+            )
+        )
+
+    def test_resolve_qxtax_zwgk_appointment_url(self) -> None:
+        from tax_platform.config import city_discovery as cd
+
+        cand = CitySiteCandidate(
+            code="chongqing_qxtax_wz",
+            name="国家税务总局万州区税务局",
+            level="district",
+            parent_code="chongqing",
+            home_url="https://chongqing.chinatax.gov.cn/qxtax/wz/",
+            notes=["city_channel_hub"],
+        )
+        with mock.patch.object(
+            cd,
+            "_load_qxtax_fbfl_map",
+            return_value={"wz": 7915},
+        ):
+            cd._resolve_qxtax_zwgk_urls(mock.Mock(), cand, delay=0)
+        self.assertEqual(
+            cand.appointment_list_url,
+            "https://chongqing.chinatax.gov.cn/qxtax/wz/zwgk/index.html?fbfldm=7916",
+        )
+        self.assertIn("appointment_qxtax_zwgk:7916", cand.notes)
+
+    def test_qxtax_zwgk_shell_detection(self) -> None:
+        from tax_platform.config.city_discovery import _page_looks_like_qxtax_zwgk_shell
+
+        html = """
+        <html><head><script src="../../images/zwgkml.js"></script></head>
+        <body><span class="flnode newfldm">人事任免</span></body></html>
+        """
+        self.assertTrue(_page_looks_like_qxtax_zwgk_shell(html))
+
     def test_enrich_hub_finds_appointment_on_leader_sidebar(self) -> None:
         cand = CitySiteCandidate(
             code="jiangsu_col8424",
@@ -94,6 +283,118 @@ class CityDiscoveryTests(unittest.TestCase):
         </body></html>
         """
         self.assertTrue(_page_looks_like_appointment_list(html))
+
+    def test_tianjin_district_channel_hubs(self) -> None:
+        html = """
+        <div id="sjpd">
+          <span title="区局频道">区局频道</span>
+          <table>
+            <tr>
+              <td><a href="/11241000000/index.jsp" title="和平区">和平区</a></td>
+              <td><a href="/11242000000/index.jsp" title="河东区">河东区</a></td>
+              <td><a href="/11243000000/index.jsp" title="河西区">河西区</a></td>
+            </tr>
+          </table>
+        </div>
+        """
+        hubs = discover_city_channel_hubs(
+            html,
+            "https://tianjin.chinatax.gov.cn/",
+            parent_code="tianjin",
+            region="天津市",
+        )
+        by_code = {c.code: c for c in hubs}
+        self.assertIn("tianjin_fjdm_11241000000", by_code)
+        self.assertIn("tianjin_fjdm_11242000000", by_code)
+        self.assertEqual(
+            by_code["tianjin_fjdm_11241000000"].home_url,
+            "https://tianjin.chinatax.gov.cn/11241000000/index.jsp",
+        )
+        self.assertIn(
+            "u_zlmViewMx.action?fjdm=11241000000&lmdm=01000501",
+            by_code["tianjin_fjdm_11241000000"].appointment_list_url or "",
+        )
+        self.assertIn(
+            "lmdm=010002",
+            by_code["tianjin_fjdm_11241000000"].leader_intro_url or "",
+        )
+
+    def test_xinjiang_prefecture_channel_hubs(self) -> None:
+        html = """
+        <div class="footer">
+          <span>地州频道</span>
+          <ul>
+            <li><a href="/ylz/">伊犁</a></li>
+            <li><a href="/htdq/">和田</a></li>
+            <li><a href="/ksdq/">喀什</a></li>
+            <li><a href="/wlmq/">乌鲁木齐</a></li>
+          </ul>
+        </div>
+        """
+        hubs = discover_city_channel_hubs(
+            html,
+            "http://xinjiang.chinatax.gov.cn/",
+            parent_code="xinjiang",
+            region="新疆维吾尔自治区",
+        )
+        by_code = {c.code: c for c in hubs}
+        self.assertIn("xinjiang_path_ylz", by_code)
+        self.assertIn("xinjiang_path_htdq", by_code)
+        self.assertIn("/ylz/", by_code["xinjiang_path_ylz"].home_url)
+
+    def test_xinjiang_xxgk_appt_paths_from_html(self) -> None:
+        html = """
+        <ul>
+          <li><a href="/ylz/ylzxxgk/ylz_28558/fdzdgknr/zsjs/rsrm_22397/">人事任免</a></li>
+          <li><a href="/htdq/xxgk/htdq_31801/fdzdgknr/zsjs/rsrm_22397/">和田人事任免</a></li>
+          <li><a href="/ylz/ylzxxgk/ldjj/">领导简介</a></li>
+        </ul>
+        """
+        found = discover_city_sites_from_html(
+            html,
+            "http://xinjiang.chinatax.gov.cn/",
+            parent_code="xinjiang",
+            region="新疆维吾尔自治区",
+        )
+        by_code = {c.code: c for c in found}
+        self.assertIn("xinjiang_xj_ylz", by_code)
+        self.assertIn("xinjiang_xj_htdq", by_code)
+        self.assertEqual(
+            by_code["xinjiang_xj_ylz"].appointment_list_url,
+            "http://xinjiang.chinatax.gov.cn/ylz/ylzxxgk/ylz_28558/fdzdgknr/zsjs/rsrm_22397/",
+        )
+        self.assertEqual(
+            by_code["xinjiang_xj_htdq"].appointment_list_url,
+            "http://xinjiang.chinatax.gov.cn/htdq/xxgk/htdq_31801/fdzdgknr/zsjs/rsrm_22397/",
+        )
+        self.assertIn("/ylz/ylzxxgk/ldjj/", by_code["xinjiang_xj_ylz"].leader_intro_url or "")
+
+    def test_xinjiang_xxgk_seed_urls(self) -> None:
+        from tax_platform.config.city_discovery import _xinjiang_xxgk_seeds
+
+        seeds = _xinjiang_xxgk_seeds("http://xinjiang.chinatax.gov.cn/ylz/")
+        self.assertIn("http://xinjiang.chinatax.gov.cn/ylz/ylzxxgk/", seeds)
+        self.assertIn("http://xinjiang.chinatax.gov.cn/ylz/xxgk/", seeds)
+
+    def test_xinjiang_prefecture_fallback_catalog(self) -> None:
+        from tax_platform.config.city_discovery import discover_xinjiang_prefecture_fallback
+
+        found = discover_xinjiang_prefecture_fallback(
+            "xinjiang",
+            region="新疆维吾尔自治区",
+        )
+        by_code = {c.code: c for c in found}
+        self.assertIn("xinjiang_xj_ylz", by_code)
+        self.assertIn("xinjiang_xj_htdq", by_code)
+        self.assertEqual(
+            by_code["xinjiang_xj_ylz"].appointment_list_url,
+            "http://xinjiang.chinatax.gov.cn/ylz/ylzxxgk/ylz_28558/fdzdgknr/zsjs/rsrm_22397/",
+        )
+        self.assertEqual(
+            by_code["xinjiang_xj_htdq"].appointment_list_url,
+            "http://xinjiang.chinatax.gov.cn/htdq/xxgk/htdq_31801/fdzdgknr/zsjs/rsrm_22397/",
+        )
+        self.assertIn("xinjiang_prefecture_fallback", by_code["xinjiang_xj_ylz"].notes)
 
     def test_parse_xxgk_tree_funclick_labels(self) -> None:
         from tax_platform.crawler.xxgk_list import parse_xxgk_tree_labels, resolve_xxgk_infotype

@@ -251,6 +251,15 @@ def search_people(
             }
         ))
 
+    # 地区层级：入库按来源局过滤后，展示层按「现任任职单位」推断层级。
+    # 再按展示层级收敛，避免选「区县局」却出现「总局层面」分组标题。
+    if org_level:
+        results = [
+            r
+            for r in results
+            if (r.get("org_level") or _level_of(r.get("bureau_code") or "")) == org_level
+        ]
+
     def _sort_key(r: dict[str, Any]) -> tuple:
         current = r.get("current") or {}
         title_text = r.get("title_display") or current.get("title") or ""

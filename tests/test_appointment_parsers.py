@@ -210,5 +210,20 @@ class AppointmentClauseTests(unittest.TestCase):
         self.assertTrue(events[0].title_raw)
 
 
+    def test_dismiss_with_tongzhi_suffix(self) -> None:
+        from tax_platform.models.entities import NoticeMeta
+
+        notice = NoticeMeta(
+            bureau_code="beijing_yanqing",
+            title="国家税务总局北京市延庆区税务局任免工作人员（2021年7月13日）",
+            source_url="http://beijing.example/n.html",
+            raw_text="决定： 免去田淑芳同志税收经济分析科副科长（正科长级） （主持工作）职务。",
+        )
+        events = extract_appointment_events(notice)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].person_name, "田淑芳")
+        self.assertEqual(events[0].action, "dismiss")
+
+
 if __name__ == "__main__":
     unittest.main()

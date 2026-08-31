@@ -21,7 +21,8 @@ class CrawlJobHelperTests(unittest.TestCase):
         self.assertIn("pdtax", codes)
         self.assertIn("sta", codes)
         self.assertIn("guangdong", codes)
-        self.assertEqual(len(codes), 48)
+        # Includes nationwide city registry entries when output/city_sites_registry.json exists.
+        self.assertGreater(len(codes), 48)
 
     def test_appointments_payload_keeps_failed_rows(self) -> None:
         result = AppointmentCrawlResult(

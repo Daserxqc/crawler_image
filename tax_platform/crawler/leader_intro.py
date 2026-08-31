@@ -6,7 +6,11 @@ import re
 
 from bs4 import BeautifulSoup
 
-from tax_platform.crawler.http_client import extract_meta_refresh_url, resolve_list_child_url
+from tax_platform.crawler.http_client import (
+    extract_js_redirect_url,
+    extract_meta_refresh_url,
+    resolve_list_child_url,
+)
 from tax_platform.models.entities import LeaderDuty
 from tax_platform.normalize.person import is_plausible_person_name
 
@@ -16,15 +20,40 @@ NAME = (
     r"|[\u4e00-\u9fa5](?:[\u3000\s\u2002\u2003]+[\u4e00-\u9fa5]){1,3}"
     r"|[\u4e00-\u9fa5]{2,4})"
 )
+# Yunnan city hubs list many bios without "。" between them:
+# 「鲁维荣，男，彝族，中共党员，…局长 ‍ 周庆云，男，…」
 PROFILE_RE = re.compile(
-    rf"(?:^|[^，。；\u4e00-\u9fa5·])\s*(?P<name>{NAME})\s*[,，]\s*(?P<gender>男|女)\s*[,，]?\s*"
+    rf"(?:^|[^，。；\u4e00-\u9fa5·])\s*(?P<name>{NAME})\s*[,，：:]\s*(?P<gender>男|女)\s*[,，]?\s*"
     r"(?:(?P<ethnicity>[\u4e00-\u9fa5]+族)\s*[,，]\s*)?"
-    r"(?P<title>.+?)(?:。|\s*分管工作)"
+    rf"(?P<title>.+?)"
+    rf"(?:。|\s*分管工作|(?=\s*{NAME}\s*[,，：:]\s*(?:男|女))|$)"
+)
+# ldjj2022 profile pane: name line ends with title (duty blocks are separate).
+LDJJ_PROFILE_RE = re.compile(
+    rf"^\s*(?P<name>{NAME})\s*[,，]\s*(?P<gender>男|女)\s*[,，]?\s*"
+    r"(?:(?P<ethnicity>[\u4e00-\u9fa5]+族)\s*[,，]\s*)?"
+    r"(?P<title>.+?)\s*$"
+)
+# Sichuan city hubs: "党委书记、局长张莉主持全面工作。" / "党委委员、副局长姚克安分管…"
+SICHUAN_ROLE_NAME_DUTY_RE = re.compile(
+    rf"(?P<title>党委书记、局长|党委副书记、局长|"
+    rf"党委委员、(?:纪检组组长|总会计师|总经济师|总审计师|副局长|副书记)|"
+    rf"(?:一级|二级|三级)?高级主办)"
+    rf"\s*(?P<name>{NAME})\s*"
+    rf"(?P<action>主持|分管|协助)(?P<body>[^。]*)。"
 )
 # Fujian-style: "林京华（党委书记、局长）男，汉族，1962年…"
+# Xinjiang-style: "石小东（党委书记、局长）\n石小东：男，汉族，…"
 HEADING_BIO_RE = re.compile(
     rf"(?P<name>{NAME})\s*[（(](?P<title>[^）)]{{2,40}})[）)]\s*"
+    rf"(?:(?P=name)\s*[：:]\s*)?"
     rf"(?P<gender>男|女)\s*[,，]\s*(?:(?P<ethnicity>[\u4e00-\u9fa5]+族)\s*[,，]\s*)?"
+)
+# Yunnan Pu'er-style: "肖五洲（男，汉族，国家税务总局普洱市税务局党委书记、局长。）"
+PAREN_GENDER_BIO_RE = re.compile(
+    rf"(?P<name>{NAME})\s*[（(]\s*(?P<gender>男|女)\s*[,，]\s*"
+    r"(?:(?P<ethnicity>[\u4e00-\u9fa5]+族)\s*[,，]\s*)?"
+    rf"(?P<title>[^）)]+?)[。）)]+"
 )
 ARTICLE_HREF_RE = re.compile(
     r"(?:20\d{4}/t\d+|t\d+)\.s?html|/ld_\d+|content_[a-f0-9]+\.shtml|"
@@ -43,6 +72,16 @@ INLINE_NAME_BUREAU_TITLE_RE = re.compile(
 LDJJ_CHILD_RE = re.compile(
     r"/(?:ldjj|ldzl|ldjs|ldxx\w*|leaderlist|col\d+)/",
     re.IGNORECASE,
+)
+# Hubei /hbsw/{city}/xxgk/ldjj/: bios live in document.write('姓名，男，…'.replace(...)).
+HUBEI_DOC_WRITE_RE = re.compile(
+    r"document\.write\s*\(\s*['\"]((?:(?:\\.|[^'\"\\])*?))['\"]\s*\.replace\s*\(",
+    re.I,
+)
+HUBEI_PROFILE_INLINE_RE = re.compile(
+    rf"^\s*(?P<name>{NAME})\s*[,，]\s*(?P<gender>男|女)\s*[,，]\s*"
+    r"(?:(?P<ethnicity>[\u4e00-\u9fa5]+族)\s*[,，]\s*)?"
+    r"(?P<title>.+?)\s*$"
 )
 SKIP_LINK_TEXT = (
     "首页",
@@ -67,14 +106,19 @@ SKIP_PSEUDO_NAMES = (
     "繁体",
     "繁體",
     "关怀版",
-    "增值税",
-    "消费税",
+    "合规经营",
+    "隐私声明",
     "个税",
     "发票",
     "小微企业",
     "减税降费",
     "数电票",
     "税费优惠",
+    "房产税",
+    "印花税",
+    "市局频道",
+    "市州频道",
+    "区县频道",
     "机构职能",
     "机构设置",
     "联系方式",
@@ -113,9 +157,13 @@ SKIP_PSEUDO_NAMES = (
     "人事任免",
     "人事信息",
     "通知公告",
+    "分管工作",
+    "联系单位",
+    "网站首页",
+    "网站纠错",
 )
 # Require role words; bare "税务" is too broad (news titles like "甘肃税务").
-TITLE_MARKERS = ("党委", "局长", "纪检", "总会计", "总审计", "总经济", "副书记", "书记")
+TITLE_MARKERS = ("党委", "局长", "纪检", "总会计", "总审计", "总经济", "副书记", "书记", "巡视员")
 ROLE_ONLY_TITLES = (
     "局长",
     "副局长",
@@ -147,7 +195,7 @@ ALT_NAME_TITLE_RE = re.compile(
     rf"(?:^|[\n\r])\s*(?P<name>{NAME})\s*[\n\r]+\s*(?P<title>[^\n\r]{{2,80}}?)(?=\s*[\n\r]|$)"
 )
 PERSON_NAME_ONLY_RE = re.compile(rf"^{NAME}$")
-LEADER_COL_HREF_RE = re.compile(r"/col/col\d+/", re.I)
+LEADER_COL_HREF_RE = re.compile(r"/col/col\d+/|/ld_[a-z]+\.s?html", re.I)
 CHROME_MARKERS = (
     "网站地图",
     "网站声明",
@@ -164,13 +212,22 @@ CHROME_MARKERS = (
 def parse_leader_intro(html: str, source_url: str, bureau_code: str) -> list[LeaderDuty]:
     soup = BeautifulSoup(html, "html.parser")
 
+    article_meta = soup.select_one("meta[name='i_articleid']")
+    article_id = str(article_meta.get("content") or "").strip() if article_meta else ""
+    if article_id and article_id != "0" and "liaoning.chinatax.gov.cn" in source_url:
+        detail = _parse_liaoning_art_detail(soup, source_url, bureau_code)
+        if detail:
+            return _filter_leader_duties(detail)
+
     # Merge multi-person list formats (sidebar / paired role+name / colon) so
     # complementary patterns on one page (e.g. Xinjiang) are not lost.
     # Hub pages like Jiangxi 史峰 / Xizang 任伟: left nav lists ALL leaders while
     # the main pane shows only the selected bio — extract sidebar first.
     sidebar = _parse_leader_hub_sidebar(soup, source_url, bureau_code)
     bios = _merge_duties(
+        _parse_hubei_document_write_leaders(soup, html, source_url, bureau_code),
         _parse_hebei_sidebar_list(soup, source_url, bureau_code),
+        _parse_liaoning_leader_cards(soup, source_url, bureau_code),
         _parse_paired_role_name_links(soup, source_url, bureau_code),
         _parse_name_title_leader_list(soup, source_url, bureau_code),
         _parse_title_colon_name_list(soup, source_url, bureau_code),
@@ -183,11 +240,14 @@ def parse_leader_intro(html: str, source_url: str, bureau_code: str) -> list[Lea
     bios = _merge_duties(
         bios,
         _parse_guangdong_leader_blocks(soup, source_url, bureau_code),
+        _parse_liaoning_art_detail(soup, source_url, bureau_code),
         _parse_multi_leader_text(text, source_url, bureau_code),
         _parse_heading_bio_profiles(text, source_url, bureau_code),
+        _parse_paren_gender_bios(text, source_url, bureau_code),
         _parse_inline_name_bureau_titles(text, source_url, bureau_code),
         _parse_alternating_name_title_text(text, source_url, bureau_code),
         _parse_sequential_profiles(text, source_url, bureau_code),
+        _parse_sichuan_role_name_duties(text, source_url, bureau_code),
     )
 
     ldjj = soup.select_one(".ldjj2022")
@@ -198,10 +258,14 @@ def parse_leader_intro(html: str, source_url: str, bureau_code: str) -> list[Lea
 
     # Overlay bio details onto sidebar stubs (sidebar order preserved).
     if sidebar:
-        return _overlay_sidebar_with_bios(sidebar, bios)
+        return _filter_leader_duties(_overlay_sidebar_with_bios(sidebar, bios))
     if bios:
-        return bios
+        return _filter_leader_duties(bios)
     return []
+
+
+def _filter_leader_duties(duties: list[LeaderDuty]) -> list[LeaderDuty]:
+    return [d for d in duties if is_plausible_person_name(d.person_name)]
 
 
 def _overlay_sidebar_with_bios(
@@ -248,6 +312,7 @@ def _parse_leader_hub_sidebar(
         "div.ldxx-r",
         "div.ldxx-l",
         "ul.list_lefnavLdjj",
+        "ul.submenu",
         ".mainbox_left",
         ".swxw_left",
         "div.ldjj_left",
@@ -303,6 +368,7 @@ def _person_name_links_in(
             LEADER_COL_HREF_RE.search(href)
             or ARTICLE_HREF_RE.search(href)
             or re.search(r"/(?:ldjj|ldzl|ldjs|ldxx|leaderlist|010002)/", href, re.I)
+            or re.search(r"/ld_[a-z]+\.s?html", href, re.I)
             or href.startswith("./")
             or href.startswith("../")
             or href.startswith("/")
@@ -362,9 +428,35 @@ def _duty_richness(duty: LeaderDuty) -> tuple[int, int, int]:
     )
 
 
+def leader_detail_urls(html: str, hub_url: str) -> list[str]:
+    """Liaoning/JCMS list pages: ``div.tit > a[href*='/art/']`` detail links."""
+    soup = BeautifulSoup(html, "html.parser")
+    col_id = ""
+    col_meta = soup.select_one("meta[name='i_columnid']")
+    if col_meta is not None:
+        col_id = str(col_meta.get("content") or "").strip()
+    urls: list[str] = []
+    seen: set[str] = set()
+    for anchor in soup.select("div.tit a[href*='/art/'], div.zhaiyao a[href*='/art/']"):
+        href = str(anchor.get("href") or "")
+        if not href or href.startswith("javascript:"):
+            continue
+        if col_id and f"art_{col_id}_" not in href:
+            continue
+        url = resolve_list_child_url(hub_url, href)
+        key = url.split("?", 1)[0].rstrip("/")
+        if key in seen or not ARTICLE_HREF_RE.search(key):
+            continue
+        seen.add(key)
+        urls.append(url)
+    return urls
+
+
 def leader_page_targets(html: str, hub_url: str) -> list[str]:
-    """Follow META REFRESH, sidebar leader nav, or article links."""
-    refresh_url = extract_meta_refresh_url(html, hub_url)
+    """Follow META REFRESH / JS location, sidebar leader nav, or article links."""
+    refresh_url = extract_meta_refresh_url(html, hub_url) or extract_js_redirect_url(
+        html, hub_url
+    )
     if refresh_url:
         return [refresh_url]
 
@@ -394,7 +486,7 @@ def leader_page_targets(html: str, hub_url: str) -> list[str]:
 
     for anchor in soup.select(
         ".mainbox_left .list a[href], li[id^='ldjj_'] a[href], "
-        ".ldjj_name a[href], .ld_li a[href], ul.submenu a[href*='ldjianjie'], "
+        ".ldjj_name a[href], .ld_li a[href], ul.submenu a[href], "
         "ul.list_lefnavLdjj a[href], div.left-box a[href], div.ldxx-r a[href], "
         "div.ldxx-l a[href], div.ldjj_left a[href]"
     ):
@@ -423,6 +515,158 @@ def leader_page_targets(html: str, hub_url: str) -> list[str]:
         ):
             add(href)
     return urls
+
+
+def html_has_hubei_leader_body(html: str) -> bool:
+    """True when page looks like Hubei /hbsw/…/ldjj/ with JS-embedded leader bios."""
+    if "xxgkleaderlists" not in html and "leader-body" not in html:
+        return False
+    return bool(
+        HUBEI_DOC_WRITE_RE.search(html)
+        and re.search(r"[\u4e00-\u9fa5]{2,4}[，,]\s*[男女]", html)
+    )
+
+
+def _parse_hubei_document_write_leaders(
+    soup: BeautifulSoup,
+    html: str,
+    source_url: str,
+    bureau_code: str,
+) -> list[LeaderDuty]:
+    """Parse Hubei city leader pages with document.write bios + optional .leaderarticle."""
+    if not html_has_hubei_leader_body(html):
+        return []
+
+    duties: list[LeaderDuty] = []
+    seen: set[str] = set()
+    list_root = soup.select_one("ul.xxgkleaderlists")
+    if list_root is not None:
+        for item in list_root.select(":scope > li"):
+            profile_text = _hubei_profile_from_node(item)
+            if not profile_text:
+                continue
+            match = HUBEI_PROFILE_INLINE_RE.match(profile_text)
+            if match is None:
+                continue
+            duty_summary, departments = _parse_hubei_leaderarticle(
+                item.select_one(".leaderarticle")
+            )
+            duty = _leader_duty_from_hubei_match(
+                match,
+                source_url,
+                bureau_code,
+                seen,
+                duty_summary=duty_summary,
+                departments=departments,
+            )
+            if duty is not None:
+                duties.append(duty)
+        if duties:
+            return duties
+
+    for profile_text in _hubei_document_write_profiles(html):
+        match = HUBEI_PROFILE_INLINE_RE.match(profile_text)
+        if match is None:
+            continue
+        duty = _leader_duty_from_hubei_match(match, source_url, bureau_code, seen)
+        if duty is not None:
+            duties.append(duty)
+    return duties
+
+
+def _hubei_profile_from_node(node) -> str:
+    for script in node.select("script"):
+        raw = script.string or script.get_text()
+        if not raw:
+            continue
+        match = HUBEI_DOC_WRITE_RE.search(raw)
+        if match is None:
+            continue
+        text = match.group(1)
+        if re.search(r"[\u4e00-\u9fa5]{2,4}[，,]\s*[男女]", text):
+            return text.strip()
+    return ""
+
+
+def _hubei_document_write_profiles(html: str) -> list[str]:
+    profiles: list[str] = []
+    for match in HUBEI_DOC_WRITE_RE.finditer(html):
+        text = match.group(1).strip()
+        if re.search(r"[\u4e00-\u9fa5]{2,4}[，,]\s*[男女]", text):
+            profiles.append(text)
+    return profiles
+
+
+def _parse_hubei_leaderarticle(node) -> tuple[str | None, list[str]]:
+    if node is None:
+        return None, []
+    duty_summary: str | None = None
+    departments: list[str] = []
+    liaison_units: list[str] = []
+    for group in node.select(".group1"):
+        heading = group.select_one("h2")
+        if heading is None:
+            continue
+        title = heading.get_text(" ", strip=True)
+        body_node = group.select_one(".jj")
+        body = body_node.get_text(" ", strip=True) if body_node else ""
+        if not body:
+            continue
+        if (
+            "主持" in title
+            or ("主持" in body and "全面" in body)
+            or "负责全面工作" in body
+        ):
+            duty_summary = "主持全面工作"
+        elif "联系单位" in title or title.startswith("联系"):
+            liaison_units = _split_departments(body)
+        elif "分管" in title:
+            if "负责全面工作" in body or ("主持" in body and "全面" in body):
+                duty_summary = "主持全面工作"
+            else:
+                duty_summary = duty_summary or "分管工作"
+                departments = _split_departments(body)
+    if duty_summary is None and liaison_units:
+        duty_summary = "主持全面工作"
+    return duty_summary, departments or liaison_units
+
+
+def _leader_duty_from_hubei_match(
+    match: re.Match[str],
+    source_url: str,
+    bureau_code: str,
+    seen: set[str],
+    *,
+    duty_summary: str | None = None,
+    departments: list[str] | None = None,
+) -> LeaderDuty | None:
+    name = _clean_name(match.group("name"))
+    title_raw = _normalize_title(match.group("title"))
+    if not name or name in seen:
+        return None
+    if not is_plausible_person_name(name):
+        return None
+    if not any(key in title_raw for key in TITLE_MARKERS) and title_raw not in ROLE_ONLY_TITLES:
+        return None
+    seen.add(name)
+    if duty_summary is None:
+        if "书记" in title_raw and "局长" in title_raw:
+            duty_summary = "主持全面工作"
+        elif any(
+            key in title_raw
+            for key in ("副局长", "总会计师", "总审计师", "总经济师", "纪检", "副书记", "巡视员")
+        ):
+            duty_summary = "分管工作"
+    return LeaderDuty(
+        person_name=name,
+        gender=match.group("gender"),
+        ethnicity=match.group("ethnicity"),
+        title_raw=title_raw,
+        duty_summary=duty_summary,
+        departments_raw=departments or [],
+        source_url=source_url,
+        bureau_code=bureau_code,
+    )
 
 
 def _parse_hebei_sidebar_list(soup: BeautifulSoup, source_url: str, bureau_code: str) -> list[LeaderDuty]:
@@ -626,8 +870,14 @@ def _bio_index(soup: BeautifulSoup) -> dict[str, re.Match[str]]:
 
 
 def _normalize_title(title: str) -> str:
-    title = re.sub(r"\s+", "", title or "")
-    title = re.sub(r"^中共党员[，,]", "", title)
+    title = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", title or "")
+    title = re.sub(r"\s+", "", title)
+    title = title.strip("。．.;；、，,")
+    title = re.sub(r"^中共党员[，,（(]*", "", title)
+    title = re.sub(r"^[（(]", "", title)
+    title = title.rstrip("）)")
+    # Ethnicity accidentally swallowed into title when comma missing.
+    title = re.sub(r"^[\u4e00-\u9fa5]{1,3}族(?=国家税务总局)", "", title)
     # Drop accidental leading nav crumbs
     title = re.sub(r"^领导简介", "", title)
     return title
@@ -673,6 +923,112 @@ def _duty_from_name_title(
         source_url=person_url,
         bureau_code=bureau_code,
     )
+
+
+def _parse_liaoning_leader_cards(
+    soup: BeautifulSoup, source_url: str, bureau_code: str
+) -> list[LeaderDuty]:
+    """Liaoning city leader list cards: ``div.tit`` + ``div.zhaiyao``."""
+    duties: list[LeaderDuty] = []
+    seen: set[str] = set()
+    for tit in soup.select("div.tit"):
+        anchor = tit.select_one("a[href*='/art/']")
+        if anchor is None:
+            continue
+        label = re.sub(r"\s+", " ", anchor.get_text(" ", strip=True)).strip()
+        parsed = _split_name_title_label(label)
+        if parsed is None:
+            continue
+        name, title = parsed
+        href = str(anchor.get("href") or "")
+        detail_url = resolve_list_child_url(source_url, href) if href else source_url
+        zhaiyao = tit.find_next_sibling("div", class_="zhaiyao")
+        bio_text = zhaiyao.get_text(" ", strip=True) if zhaiyao is not None else ""
+        gender = ethnicity = None
+        bio_match = PROFILE_RE.search(bio_text) or HEADING_BIO_RE.search(bio_text)
+        if bio_match is not None:
+            gender = bio_match.groupdict().get("gender")
+            ethnicity = bio_match.groupdict().get("ethnicity")
+        duty = _duty_from_name_title(
+            name,
+            title,
+            detail_url,
+            bureau_code,
+            {},
+            seen,
+            href=href,
+        )
+        if duty is None:
+            continue
+        if gender:
+            duty.gender = gender
+        if ethnicity:
+            duty.ethnicity = ethnicity
+        duties.append(duty)
+    return duties if len(duties) >= 2 else []
+
+
+def _parse_liaoning_art_detail(
+    soup: BeautifulSoup, source_url: str, bureau_code: str
+) -> list[LeaderDuty]:
+    """Liaoning/JCMS leader detail article (``/art/…/art_873_…``)."""
+    if "liaoning.chinatax.gov.cn" not in source_url:
+        return []
+    title_raw = ""
+    for sel in (
+        "meta[name='ArticleTitle']",
+        "meta[name='ArticleTite']",
+        "h1",
+        ".content_title",
+        ".article_title",
+        "title",
+    ):
+        node = soup.select_one(sel)
+        if node is None:
+            continue
+        title_raw = node.get("content") if node.name == "meta" else node.get_text(" ", strip=True)
+        title_raw = re.sub(r"\s+", " ", str(title_raw or "")).strip()
+        if title_raw and ("（" in title_raw or "(" in title_raw):
+            break
+        if title_raw and "领导" not in title_raw[:8]:
+            break
+    parsed = _split_name_title_label(title_raw.split("_")[0].split("-")[0].strip())
+    root = _main_content_root(soup)
+    text = _visible_text(root)
+    if parsed is None:
+        match = HEADING_BIO_RE.search(text) or PROFILE_RE.search(text)
+        if match is None:
+            return []
+        name = _clean_name(match.group("name"))
+        title = _normalize_title(match.group("title"))
+        gender = match.groupdict().get("gender")
+        ethnicity = match.groupdict().get("ethnicity")
+    else:
+        name, title = parsed
+        gender = ethnicity = None
+        match = PROFILE_RE.search(text) or HEADING_BIO_RE.search(text)
+        if match is not None and _clean_name(match.group("name")) == name:
+            gender = match.groupdict().get("gender")
+            ethnicity = match.groupdict().get("ethnicity")
+    duty_summary, departments = _duty_and_departments(text)
+    if not duty_summary and any(k in title for k in ("副局长", "总会计师", "纪检", "总审计", "总经济师")):
+        duty_summary = "分管工作"
+    if "书记" in title and "局长" in title and not duty_summary:
+        duty_summary = "主持全面工作"
+    if not is_plausible_person_name(name):
+        return []
+    return [
+        LeaderDuty(
+            person_name=name,
+            gender=gender,
+            ethnicity=ethnicity,
+            title_raw=title,
+            duty_summary=duty_summary,
+            departments_raw=departments,
+            source_url=source_url,
+            bureau_code=bureau_code,
+        )
+    ]
 
 
 def _parse_guangdong_leader_blocks(
@@ -743,7 +1099,8 @@ def _parse_ldjj2022(node, source_url: str, bureau_code: str) -> LeaderDuty | Non
     profile_node = node.select_one(".ldjjjj")
     if profile_node is None:
         return None
-    match = PROFILE_RE.search(_visible_text(profile_node))
+    profile_text = _visible_text(profile_node)
+    match = PROFILE_RE.search(profile_text) or LDJJ_PROFILE_RE.search(profile_text)
     if match is None:
         return None
 
@@ -770,11 +1127,15 @@ def _parse_ldjj2022(node, source_url: str, bureau_code: str) -> LeaderDuty | Non
     if duty_summary is None and liaison_units:
         duty_summary = "主持全面工作"
 
+    title_raw = _normalize_title(match.group("title"))
+    if duty_summary is None and "书记" in title_raw and "局长" in title_raw:
+        duty_summary = "主持全面工作"
+
     return LeaderDuty(
         person_name=_clean_name(match.group("name")),
         gender=match.group("gender"),
         ethnicity=match.group("ethnicity"),
-        title_raw=match.group("title").strip(),
+        title_raw=title_raw,
         duty_summary=duty_summary,
         departments_raw=departments or liaison_units,
         source_url=source_url,
@@ -799,6 +1160,44 @@ def _parse_multi_leader_text(text: str, source_url: str, bureau_code: str) -> li
                 gender=match.group("gender"),
                 ethnicity=match.group("ethnicity"),
                 title_raw=_normalize_title(match.group("title")),
+                duty_summary=duty_summary,
+                departments_raw=departments,
+                source_url=source_url,
+                bureau_code=bureau_code,
+            )
+        )
+    return duties
+
+
+def _parse_sichuan_role_name_duties(
+    text: str, source_url: str, bureau_code: str
+) -> list[LeaderDuty]:
+    """Parse Sichuan prose: 「党委书记、局长张莉主持全面工作。」"""
+    text = _trim_chrome(text)
+    duties: list[LeaderDuty] = []
+    seen: set[str] = set()
+    for match in SICHUAN_ROLE_NAME_DUTY_RE.finditer(text):
+        name = _clean_name(match.group("name"))
+        title = _normalize_title(match.group("title"))
+        if not name or name in seen or not is_plausible_person_name(name):
+            continue
+        seen.add(name)
+        action = match.group("action")
+        body = match.group("body") or ""
+        if action.startswith("主持"):
+            duty_summary = "主持全面工作"
+            departments: list[str] = []
+        elif action.startswith("协助"):
+            duty_summary = "协助工作"
+            departments = []
+        else:
+            duty_summary, departments = _duty_and_departments(f"分管{body}")
+        duties.append(
+            LeaderDuty(
+                person_name=name,
+                gender=None,
+                ethnicity=None,
+                title_raw=title,
                 duty_summary=duty_summary,
                 departments_raw=departments,
                 source_url=source_url,
@@ -835,6 +1234,34 @@ def _parse_heading_bio_profiles(text: str, source_url: str, bureau_code: str) ->
     return duties
 
 
+def _parse_paren_gender_bios(text: str, source_url: str, bureau_code: str) -> list[LeaderDuty]:
+    """Parse Yunnan-style '姓名（男，汉族，…党委书记、局长。）' blocks."""
+    text = _trim_chrome(text)
+    duties: list[LeaderDuty] = []
+    seen: set[str] = set()
+    for match in PAREN_GENDER_BIO_RE.finditer(text):
+        name = _clean_name(match.group("name"))
+        title = _normalize_title(match.group("title"))
+        if not name or name in seen or not title:
+            continue
+        if not any(k in title for k in TITLE_MARKERS) and title not in ROLE_ONLY_TITLES:
+            continue
+        seen.add(name)
+        duties.append(
+            LeaderDuty(
+                person_name=name,
+                gender=match.group("gender"),
+                ethnicity=match.group("ethnicity"),
+                title_raw=title,
+                duty_summary=None,
+                departments_raw=[],
+                source_url=source_url,
+                bureau_code=bureau_code,
+            )
+        )
+    return duties
+
+
 def _parse_sequential_profiles(text: str, source_url: str, bureau_code: str) -> list[LeaderDuty]:
     text = _trim_chrome(text)
     matches = list(PROFILE_RE.finditer(text))
@@ -864,6 +1291,11 @@ def _main_content_root(soup: BeautifulSoup) -> BeautifulSoup:
         ".xxgk_sjft_con",
         ".xxgk_sjft",
         ".article_body",
+        "#zoom",
+        ".bt_content",
+        ".TRS_Editor",
+        ".article",
+        ".article_content",
         "#content",
         ".js_article_content",
         "main",
@@ -888,11 +1320,13 @@ def _main_content_root(soup: BeautifulSoup) -> BeautifulSoup:
 
 
 def _visible_text(node) -> str:
-    return re.sub(r"\s+", " ", node.get_text(" ", strip=True))
+    text = node.get_text(" ", strip=True)
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", " ", text)
+    return re.sub(r"\s+", " ", text)
 
 
 def _clean_name(name: str) -> str:
-    text = re.sub(r"[\s\u3000\u2002\u2003\u200b]+", "", name or "")
+    text = re.sub(r"[\s\u3000\u2002\u2003\u200b\u200c\u200d\ufeff]+", "", name or "")
     # Hub cards often use 「江武峰（江武峰）」.
     text = re.sub(r"[（(][^）)]*[）)]", "", text)
     return text
@@ -902,8 +1336,13 @@ def _trim_chrome(text: str) -> str:
     cut = len(text)
     for marker in CHROME_MARKERS:
         index = text.find(marker)
-        if index != -1:
-            cut = min(cut, index)
+        if index == -1:
+            continue
+        # Share widgets ("微信扫一扫：分享") often sit ABOVE multi-bio bodies
+        # (e.g. Xiamen); do not truncate when profiles remain after the marker.
+        if marker == "扫一扫" and len(PROFILE_RE.findall(text[index:])) >= 2:
+            continue
+        cut = min(cut, index)
     return text[:cut].strip()
 
 

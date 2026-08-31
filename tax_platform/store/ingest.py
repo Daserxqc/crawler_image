@@ -168,17 +168,30 @@ def get_person_profile(pid: str, *, conn: sqlite3.Connection | None = None) -> d
         """,
         (bureau_code, name),
     ).fetchall()
-    # Leaders may be indexed under one bureau while appointment notices were
-    # ingested under another — fall back to name-wide search when local is empty.
+    # Optional: same-name events from other bureaus (e.g. city leader appointed
+    # in a province notice). Never pull a different org-level namesake — that
+    # turns 津南「王海勇」into 总局所得税司副司长.
     if not events:
-        events = db.execute(
+        try:
+            local_level = get_site(bureau_code).level
+        except KeyError:
+            local_level = None
+        foreign = db.execute(
             """
             SELECT * FROM appointment_events
-            WHERE person_name = ?
+            WHERE person_name = ? AND bureau_code != ?
             ORDER BY COALESCE(effective_on, '') DESC, id DESC
             """,
-            (name,),
+            (name, bureau_code),
         ).fetchall()
+        events = []
+        for row in foreign:
+            try:
+                if get_site(row["bureau_code"]).level != local_level:
+                    continue
+            except KeyError:
+                continue
+            events.append(row)
 
     history = enrich_history_rows(list(events), bureau_code=bureau_code)
     leader_dict = dict(leader) if leader is not None else None
@@ -186,6 +199,7 @@ def get_person_profile(pid: str, *, conn: sqlite3.Connection | None = None) -> d
         history,
         leader=leader_dict,
         person_title=person["title_current"],
+        profile_bureau_code=bureau_code,
     )
 
     profile = {

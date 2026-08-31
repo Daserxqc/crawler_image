@@ -49,6 +49,9 @@ class DepartmentNormalizeExtraTests(unittest.TestCase):
         self.assertFalse(is_plausible_person_name("命陈双格"))
         self.assertFalse(is_plausible_person_name("省税务局"))
         self.assertFalse(is_plausible_person_name("人事"))
+        self.assertFalse(is_plausible_person_name("朝阳区"))
+        self.assertFalse(is_plausible_person_name("主要职责"))
+        self.assertFalse(is_plausible_person_name("市局链接"))
 
 
 class CatalogAndSearchTests(unittest.TestCase):

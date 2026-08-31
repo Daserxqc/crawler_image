@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from urllib.parse import parse_qs, urlparse
 
 from tax_platform.config.sites import get_site
 from tax_platform.crawler.appointment_clauses import extract_appointment_events
@@ -48,7 +51,105 @@ class AppointmentCrawlResult:
     skipped: int = 0
 
 
+def _qxtax_home_from_list_url(list_url: str) -> str | None:
+    parsed = urlparse(list_url)
+    match = re.search(r"/qxtax/([a-z][a-z0-9]{1,12})/", (parsed.path or "").lower())
+    if not match:
+        return None
+    slug = match.group(1)
+    return f"{parsed.scheme or 'https'}://{parsed.netloc}/qxtax/{slug}/"
+
+
+def _warm_qxtax_session(session, list_url: str) -> None:
+    """Establish Ruishu cookies before ``/api/queryGwxxQx`` (needs prior page hits)."""
+    home = _qxtax_home_from_list_url(list_url)
+    if not home:
+        return
+    for url in (home, list_url):
+        try:
+            fetch_html(session, url, follow_meta_refresh=False)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.3)
+
+
+def _fetch_qxtax_zwgk_list_html(session, list_url: str) -> str | None:
+    """Chongqing ``/qxtax/{slug}/zwgk/`` lists load via ``/api/queryGwxxQx``."""
+    parsed = urlparse(list_url)
+    path = parsed.path.lower()
+    if "/qxtax/" not in path or "/zwgk/" not in path:
+        return None
+    fbfl = (parse_qs(parsed.query).get("fbfldm") or [None])[0]
+    if not fbfl:
+        return None
+
+    api = f"{parsed.scheme or 'https'}://{parsed.netloc}/api/queryGwxxQx"
+    rows: list[dict] = []
+    page_size = 50
+
+    def _post_page(index: int) -> dict | None:
+        payload = {
+            "title": "",
+            "fbsj": "",
+            "fbflDm": fbfl,
+            "pageSize": str(page_size),
+            "pageIndex": str(index),
+        }
+        resp = session.post(
+            api,
+            data={"jsonstr": json.dumps(payload, ensure_ascii=False)},
+            timeout=30,
+            headers={"Referer": list_url},
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if not body.get("success"):
+            return None
+        return body
+
+    _warm_qxtax_session(session, list_url)
+    for attempt in range(3):
+        if attempt:
+            time.sleep(1.5 * attempt)
+        rows = []
+        page_index = 0
+        try:
+            while True:
+                body = _post_page(page_index)
+                if body is None:
+                    break
+                batch = body.get("data") or []
+                if not batch:
+                    break
+                rows.extend(batch)
+                total = int(body.get("total") or 0)
+                if total and len(rows) >= total:
+                    break
+                if len(batch) < page_size:
+                    break
+                page_index += 1
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("qxtax list API failed %s (attempt %s): %s", list_url, attempt + 1, exc)
+            rows = []
+            continue
+        if rows:
+            break
+
+    if not rows:
+        return None
+    links = []
+    for row in rows:
+        href = row.get("docpuburl") or ""
+        title = row.get("doctitle") or ""
+        if href and title:
+            links.append(f'<a href="{href}">{title}</a>')
+    return f"<html><body>{''.join(links)}</body></html>"
+
+
 def _load_appointment_list_html(session, list_url: str) -> tuple[str, str]:
+    qxtax_html = _fetch_qxtax_zwgk_list_html(session, list_url)
+    if qxtax_html and parse_appointment_list(qxtax_html, list_url):
+        return list_url, qxtax_html
     # Warm WAF cookies on the column shell (drop ?number=) when needed.
     if "chinatax.gov.cn" in list_url and "number=" in list_url:
         shell = list_url.split("?", 1)[0]
@@ -56,7 +157,11 @@ def _load_appointment_list_html(session, list_url: str) -> tuple[str, str]:
             fetch_html(session, shell, follow_meta_refresh=False)
         except Exception:  # noqa: BLE001
             pass
-    final_url, html = fetch_html(session, list_url, follow_meta_refresh=False)
+    try:
+        final_url, html = fetch_html(session, list_url, follow_meta_refresh=False)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("list fetch failed %s: %s", list_url, exc)
+        return list_url, qxtax_html or ""
     items_html = materialize_list_html(html)
     wcm = _fetch_wcm_static_pages(session, final_url, html)
     if wcm:
@@ -129,6 +234,8 @@ def crawl_appointments_site(
     delay: float = 0.4,
     known_urls: set[str] | None = None,
     incremental: bool = True,
+    detail_workers: int = 1,
+    session=None,
 ) -> AppointmentCrawlResult:
     """limit=0 means no cap (crawl every appointment link found on the list page).
 
@@ -146,7 +253,9 @@ def crawl_appointments_site(
             failed=[{"url": "", "error": "no appointment_list_url"}],
             skipped=0,
         )
-    session = create_session()
+    owns_session = session is None
+    if owns_session:
+        session = create_session()
     list_url, list_html = _load_appointment_list_html(session, site.appointment_list_url)
     items = parse_appointment_list(list_html, list_url)
     if limit > 0:
@@ -156,33 +265,58 @@ def crawl_appointments_site(
     failed: list[dict[str, str]] = []
     skipped = 0
     known = known_urls or set()
+    pending = [item for item in items if not (incremental and item.source_url in known)]
+    skipped = len(items) - len(pending)
 
-    for item in items:
-        if incremental and item.source_url in known:
-            skipped += 1
-            continue
-        time.sleep(delay)
+    def _fetch_detail(item):
+        if delay:
+            time.sleep(delay)
+        thread_session = create_session()
         try:
             detail_url, detail_html = fetch_html(
-                session,
+                thread_session,
                 item.source_url,
                 referer=list_url,
                 follow_meta_refresh=False,
             )
             if is_appointment_list_url(detail_url, list_url=list_url):
-                failed.append({"url": item.source_url, "error": "list_page_skipped"})
-                logging.warning("Skip list page mistaken as notice: %s", detail_url)
-                continue
+                return None, None, {"url": item.source_url, "error": "list_page_skipped"}
             notice = parse_appointment_detail(detail_html, detail_url, site.code)
             if is_appointment_list_url(notice.source_url) or _looks_like_list_notice(notice):
-                failed.append({"url": item.source_url, "error": "list_page_content_skipped"})
-                logging.warning("Skip list-like notice content: %s", notice.source_url)
-                continue
-            notices.append(notice)
-            events.extend(extract_appointment_events(notice))
+                return None, None, {"url": item.source_url, "error": "list_page_content_skipped"}
+            evs = extract_appointment_events(notice)
+            return notice, evs, None
         except Exception as exc:  # noqa: BLE001
-            failed.append({"url": item.source_url, "error": str(exc)})
-            logging.warning("Failed %s: %s", item.source_url, exc)
+            return None, None, {"url": item.source_url, "error": str(exc)}
+        finally:
+            thread_session.close()
+
+    workers = max(1, min(detail_workers, len(pending) or 1))
+    if workers == 1:
+        for item in pending:
+            notice, evs, err = _fetch_detail(item)
+            if err:
+                failed.append(err)
+                logging.warning("Failed %s: %s", err["url"], err["error"])
+                continue
+            if notice:
+                notices.append(notice)
+                events.extend(evs)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_fetch_detail, item): item for item in pending}
+            for fut in as_completed(futures):
+                notice, evs, err = fut.result()
+                if err:
+                    failed.append(err)
+                    logging.warning("Failed %s: %s", err["url"], err["error"])
+                    continue
+                if notice:
+                    notices.append(notice)
+                    events.extend(evs)
+
+    if owns_session:
+        session.close()
 
     return AppointmentCrawlResult(
         bureau=site.code,

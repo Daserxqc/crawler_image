@@ -8,10 +8,14 @@ from dataclasses import dataclass, field
 
 from tax_platform.config.sites import get_site
 from tax_platform.crawler.crawl_state import load_crawl_state, mark_crawl_result, save_crawl_state
-from tax_platform.crawler.http_client import create_session, fetch_html
+from tax_platform.crawler.http_client import create_session, fetch_html, fetch_html_browser
 from tax_platform.crawler.job_io import resolve_site_codes, serialize_crawl_result
 from tax_platform.crawler.jpage import fetch_dataproxy_html, find_dataproxy_url, materialize_list_html
-from tax_platform.crawler.leader_intro import leader_page_targets, parse_leader_intro
+from tax_platform.crawler.leader_intro import (
+    html_has_hubei_leader_body,
+    leader_page_targets,
+    parse_leader_intro,
+)
 from tax_platform.models.entities import LeaderDuty
 
 KIND = "leaders"
@@ -26,18 +30,23 @@ class LeaderCrawlResult:
     failed: list[dict[str, str]] = field(default_factory=list)
 
 
-def _load_leader_hub(session, hub_url: str) -> tuple[str, str]:
+def _load_leader_hub(session, hub_url: str, *, bureau_code: str = "") -> tuple[str, str]:
     final_url, html = fetch_html(session, hub_url, follow_meta_refresh=True)
-    if parse_leader_intro(html, final_url, "probe") or leader_page_targets(html, final_url):
+    if parse_leader_intro(html, final_url, bureau_code or "probe") or leader_page_targets(html, final_url):
+        return final_url, html
+    if bureau_code.startswith("hubei_hbsw_") and html_has_hubei_leader_body(html):
         return final_url, html
     proxy = find_dataproxy_url(html, final_url)
     if not proxy:
         return final_url, html
     proxy_html = fetch_dataproxy_html(session, proxy, referer=final_url)
-    return final_url, materialize_list_html(proxy_html)
+    materialized = materialize_list_html(proxy_html)
+    if bureau_code.startswith("hubei_hbsw_") and html_has_hubei_leader_body(materialized):
+        return final_url, materialized
+    return final_url, materialized
 
 
-def crawl_leaders_site(code: str, *, delay: float = 0.4) -> LeaderCrawlResult:
+def crawl_leaders_site(code: str, *, delay: float = 0.4, session=None) -> LeaderCrawlResult:
     site = get_site(code)
     if not (site.leader_intro_url or "").strip():
         return LeaderCrawlResult(
@@ -47,8 +56,10 @@ def crawl_leaders_site(code: str, *, delay: float = 0.4) -> LeaderCrawlResult:
             leaders=[],
             failed=[{"url": "", "error": "no leader_intro_url"}],
         )
-    session = create_session()
-    hub_url, hub_html = _load_leader_hub(session, site.leader_intro_url)
+    owns_session = session is None
+    if owns_session:
+        session = create_session()
+    hub_url, hub_html = _load_leader_hub(session, site.leader_intro_url, bureau_code=site.code)
     pages = [hub_url]
     for target in leader_page_targets(hub_html, hub_url):
         if target not in pages:
@@ -73,6 +84,19 @@ def crawl_leaders_site(code: str, *, delay: float = 0.4) -> LeaderCrawlResult:
     for duty in parse_leader_intro(hub_html, hub_url, site.code):
         _remember(duty)
 
+    if (
+        not leaders_by_name
+        and (site.code.startswith("hubei_hbsw_") or html_has_hubei_leader_body(hub_html))
+    ):
+        try:
+            final_url, html, _ = fetch_html_browser(hub_url, timeout=90)
+            hub_url, hub_html = final_url, html
+            html_by_url[hub_url] = html
+            for duty in parse_leader_intro(html, final_url, site.code):
+                _remember(duty)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Browser fallback for %s failed: %s", site.code, exc)
+
     for index, page_url in enumerate(pages):
         if delay and index:
             time.sleep(delay)
@@ -91,6 +115,9 @@ def crawl_leaders_site(code: str, *, delay: float = 0.4) -> LeaderCrawlResult:
         except Exception as exc:  # noqa: BLE001
             failed.append({"url": page_url, "error": str(exc)})
             logging.warning("Failed %s: %s", page_url, exc)
+
+    if owns_session:
+        session.close()
 
     return LeaderCrawlResult(
         bureau=site.code,

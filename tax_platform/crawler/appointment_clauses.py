@@ -57,20 +57,59 @@ TITLE_SUFFIXES = (
 _RANK_ONLY_RE = re.compile(
     r"^(?:[一二三四]级)?(?:高级)?(?:主办|调研员|巡视员)$"
 )
-# Optional leading 「任命 / 任命：」 so 「任命陈双格为…」 does not swallow 命 into the name.
-# (?<![行]) avoids matching 「行为税」里的「为」误当成「X为Y」任命句式。
+# (?<![行无以]) avoids 「行为税 / 无为市 / 以为」里的「为」误当成任命句式。
 APPOINT_AS_RE = re.compile(
-    rf"(?:任命[:：]?)*(?P<name>{NAME_RE})(?<![行])为(?P<post>[^；。;，,]+)"
+    rf"(?:(?:任命|聘任)[:：]?)*(?P<name>{NAME_RE})(?<![行无以])为(?P<post>[^；。;，,]+)"
+)
+# 「翟盼正式任用为…」「赵湘任用为…」(prefer longer 「正式任用」 first)
+APPOINT_ZHENGSHI_RENYONG_RE = re.compile(
+    rf"(?P<name>{NAME_RE})正式任用为(?P<post>[^；。;，,]+)"
+)
+APPOINT_RENYONG_RE = re.compile(
+    rf"(?P<name>{NAME_RE})任用为(?P<post>[^；。;，,]+)"
+)
+# 「张帆挂职任…副局长」「梁芳同志担任…副组长」
+APPOINT_GUAZHI_RE = re.compile(
+    rf"(?P<name>{NAME_RE})挂职任(?P<post>[^；。;，,]+)"
+)
+APPOINT_TONGZHI_DANREN_RE = re.compile(
+    rf"(?:任命[:：]?)?(?P<name>{NAME_RE})同志担任(?P<post>[^；。;，,]+)"
 )
 # Shanghai-style: "赵健健任保税区税务分局法制科副科长"
+# Do NOT use for 担任/兼任/聘任 — those are handled above / as dismiss.
 APPOINT_RE = re.compile(rf"(?P<name>{NAME_RE})任(?P<post>[^；。;]+)")
-DISMISS_RE = re.compile(rf"免去(?P<name>{NAME_RE})(?:的(?P<post>[^；。;]+?))?职务")
+# Fujian-style probation confirmation: "陈瑶任职试用期满，考核合格，按期转正，任…副局长"
+CONFIRM_APPOINT_RE = re.compile(
+    rf"(?P<name>{NAME_RE})任职试用期满[^。；;]{{0,40}}按期转正，任(?P<post>[^；。;，,]+)"
+)
+DISMISS_TONGZHI_RE = re.compile(
+    rf"免去(?P<name>{NAME_RE})同志(?:的)?(?P<post>[^；。;]+?)(?:职务|职级)"
+)
+DISMISS_DE_RE = re.compile(rf"免去(?P<name>{NAME_RE})的(?P<post>[^；。;]+?)(?:职务|职级)")
+DISMISS_BARE_RE = re.compile(rf"免去(?P<name>{NAME_RE})(?:职务|职级)")
+# Xinjiang / Changji-style: "常旭东不再担任…副局长"
+DISMISS_NO_LONGER_RE = re.compile(
+    rf"(?P<name>{NAME_RE})不再(?:担任|兼任)(?P<post>[^；。;]+)"
+)
+# 「不再聘任为…助理工程师」
+DISMISS_NO_LONGER_PIN_RE = re.compile(
+    rf"(?:(?P<name>{NAME_RE}))?不再聘任(?:为)?(?P<post>[^；。;]+)"
+)
 PROBATION_RE = re.compile(r"(?:任职)?试用期为?(?P<years>一|二|1|2)年")
+# Chongqing / roster notices without 任命 verb (CJK spaces already collapsed):
+# 「肖锋国家税务总局重庆市南岸区税务局办公室主任（…）陈光才国家税务总局…」
+_TITLE_ALT = "|".join(TITLE_SUFFIXES)
+ROSTER_APPOINT_RE = re.compile(
+    rf"(?P<name>{NAME_RE})(?P<post>国家税务总局[\u4e00-\u9fa5、]{{2,80}}?(?:{_TITLE_ALT}))"
+    rf"(?=(?:[（(]|[\u4e00-\u9fa5]{{2,4}}国家税务总局|$))"
+)
 
 _BODY_MARKERS = (
     "决定，任命",
     "决定:任命",
     "决定：任命",
+    "决定，任命：",
+    "决定：任命：",
     "研究决定，任命",
     "研究决定:任命",
     "研究决定：任命",
@@ -83,22 +122,64 @@ _BODY_MARKERS = (
 
 def extract_appointment_events(notice: NoticeMeta) -> list[AppointmentEvent]:
     events: list[AppointmentEvent] = []
-    body = _focus_body(notice.raw_text)
+    body = _focus_body(_normalize_cjk_spaces(notice.raw_text or ""))
     clauses = _split_clauses(body)
     for clause in clauses:
         events.extend(_events_from_clause(notice, clause))
+    if not events:
+        events.extend(_events_from_roster(notice, body))
     return _dedupe_events(events)
+
+
+def _events_from_roster(notice: NoticeMeta, body: str) -> list[AppointmentEvent]:
+    """Parse verb-less roster lines: 「姓名 国家税务总局…科长」."""
+    out: list[AppointmentEvent] = []
+    for match in ROSTER_APPOINT_RE.finditer(body):
+        name = _clean_name(match.group("name"))
+        post = match.group("post")
+        if not is_plausible_person_name(name):
+            continue
+        if not _looks_like_post(post):
+            continue
+        bureau, department, title = split_post(post)
+        if not (title or department):
+            continue
+        tail = body[match.end() : match.end() + 24]
+        out.append(
+            _event(
+                notice,
+                name=name,
+                action="appoint",
+                bureau=bureau,
+                department=department,
+                title=title,
+                clause=match.group(0),
+                probation_years=_probation_years(tail),
+            )
+        )
+    return out
+
+
+def _normalize_cjk_spaces(text: str) -> str:
+    """Collapse soft line-breaks inside CJK runs (e.g. 「免 去」「纪 检组」)."""
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r"([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])", r"\1\2", text)
+    return text
 
 
 def _events_from_clause(notice: NoticeMeta, clause: str) -> list[AppointmentEvent]:
     out: list[AppointmentEvent] = []
     probation = _probation_years(clause)
 
-    for dismiss in DISMISS_RE.finditer(clause):
-        name = _clean_name(dismiss.group("name"))
+    for dismiss in _iter_dismiss_matches(clause):
+        raw_name = dismiss.groupdict().get("name") or ""
+        name = _clean_name(raw_name)
         if not is_plausible_person_name(name):
             continue
-        bureau, department, title = split_post(dismiss.group("post") or "")
+        post = dismiss.groupdict().get("post") or ""
+        bureau, department, title = split_post(post)
         out.append(
             _event(
                 notice,
@@ -111,12 +192,44 @@ def _events_from_clause(notice: NoticeMeta, clause: str) -> list[AppointmentEven
             )
         )
 
-    for appoint_as in APPOINT_AS_RE.finditer(clause):
-        name = _clean_name(appoint_as.group("name"))
-        post = appoint_as.group("post")
+    for pattern in (
+        APPOINT_ZHENGSHI_RENYONG_RE,
+        APPOINT_RENYONG_RE,
+        APPOINT_GUAZHI_RE,
+        APPOINT_TONGZHI_DANREN_RE,
+        APPOINT_AS_RE,
+    ):
+        for appoint_as in pattern.finditer(clause):
+            name = _clean_name(appoint_as.group("name"))
+            post = appoint_as.group("post")
+            if not is_plausible_person_name(name):
+                continue
+            if post.startswith("任") and pattern is APPOINT_AS_RE:
+                continue
+            if not _looks_like_post(post):
+                continue
+            bureau, department, title = split_post(post)
+            if not (title or department):
+                continue
+            out.append(
+                _event(
+                    notice,
+                    name=name,
+                    action="appoint",
+                    bureau=bureau,
+                    department=department,
+                    title=title,
+                    clause=clause,
+                    probation_years=probation
+                    or _probation_years(clause[appoint_as.end() :]),
+                )
+            )
+
+    # Only use 「X任Y」 when this clause had no 「X为Y」 hits (avoids double-count).
+    for confirm in CONFIRM_APPOINT_RE.finditer(clause):
+        name = _clean_name(confirm.group("name"))
+        post = confirm.group("post")
         if not is_plausible_person_name(name):
-            continue
-        if post.startswith("任"):
             continue
         if not _looks_like_post(post):
             continue
@@ -132,18 +245,26 @@ def _events_from_clause(notice: NoticeMeta, clause: str) -> list[AppointmentEven
                 department=department,
                 title=title,
                 clause=clause,
-                probation_years=probation or _probation_years(clause[appoint_as.end() :]),
+                probation_years=probation,
             )
         )
 
-    # Only use 「X任Y」 when this clause had no 「X为Y」 hits (avoids double-count).
-    if not out:
+    if not any(e.action == "appoint" for e in out):
         for appoint in APPOINT_RE.finditer(clause):
             name = _clean_name(appoint.group("name"))
             post = appoint.group("post")
             if not is_plausible_person_name(name):
                 continue
             if "免去" in clause[max(0, appoint.start() - 2) : appoint.start() + 2]:
+                continue
+            # 「担任/兼任/聘任」— the matched 「任」 is not the appoint verb.
+            ren_at = appoint.start() + len(appoint.group("name"))
+            if ren_at > 0 and clause[ren_at - 1] in "担兼聘":
+                continue
+            if post.startswith("职试用期"):
+                continue
+            # 文号「沪税宝任〔2026〕2号」— 「任」后紧跟书名号，不是任命动词。
+            if post.startswith(("〔", "﹝", "[", "【")):
                 continue
             if not _looks_like_post(post):
                 continue
@@ -163,6 +284,23 @@ def _events_from_clause(notice: NoticeMeta, clause: str) -> list[AppointmentEven
                 )
             )
     return out
+
+
+def _iter_dismiss_matches(clause: str):
+    seen_spans: set[tuple[int, int]] = set()
+    for pattern in (
+        DISMISS_NO_LONGER_RE,
+        DISMISS_NO_LONGER_PIN_RE,
+        DISMISS_TONGZHI_RE,
+        DISMISS_DE_RE,
+        DISMISS_BARE_RE,
+    ):
+        for match in pattern.finditer(clause):
+            span = match.span()
+            if span in seen_spans:
+                continue
+            seen_spans.add(span)
+            yield match
 
 
 def split_post(post: str) -> tuple[str | None, str | None, str | None]:
@@ -231,7 +369,14 @@ def _looks_like_post(post: str) -> bool:
         return False
     if post.startswith("用期"):
         return False
+    # 文号碎片：〔2026〕2号发文单位：…
+    if post.startswith(("〔", "﹝", "[", "【")):
+        return False
+    if re.match(r"^\d{4}[〕﹞\]]", post):
+        return False
     if "通知" in post[:6]:
+        return False
+    if "发文单位" in post[:20] or "索引号" in post[:30]:
         return False
     return bool(
         _match_suffix(re.sub(r"[（(][^）)]*级[）)]", "", post))

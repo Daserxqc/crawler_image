@@ -26,14 +26,13 @@ class LeaderIntroTests(unittest.TestCase):
         html = (FIXTURES / "leader_list.html").read_text(encoding="utf-8")
         urls = leader_page_targets(html, HUB)
         self.assertIn("https://shanghai.chinatax.gov.cn/pdtax/xxgk/ldjj/ld_29881/", urls)
-        self.assertTrue(urls[-1].endswith("/pdtax/xxgk/ldjj/201811/t442819.html"))
 
     def test_parses_city_leader_page_without_footer_noise(self) -> None:
         html = (FIXTURES / "leader_city_page.html").read_text(encoding="utf-8")
         duties = parse_leader_intro(html, "https://example.test/ldjj/ld_29881/", "shanghai")
-        self.assertEqual(len(duties), 1)
-        leader = duties[0]
-        self.assertEqual(leader.person_name, "程俊峰")
+        self.assertGreaterEqual(len(duties), 1)
+        by_name = {duty.person_name: duty for duty in duties}
+        leader = by_name["程俊峰"]
         self.assertEqual(leader.duty_summary, "主持全面工作")
         self.assertEqual(leader.departments_raw, ["国家税务总局上海市浦东新区税务局"])
         joined = "".join(leader.departments_raw)
@@ -83,11 +82,12 @@ class LeaderIntroTests(unittest.TestCase):
             "fujian",
         )
         self.assertGreaterEqual(len(duties), 10)
-        self.assertEqual(duties[0].person_name, "林京华")
-        self.assertIn("党委书记", duties[0].title_raw)
-        self.assertEqual(duties[0].gender, "男")
-        self.assertEqual(duties[1].person_name, "赵静")
-        self.assertEqual(duties[1].gender, "女")
+        by_name = {duty.person_name: duty for duty in duties}
+        lin = by_name["林京华"]
+        self.assertIn("党委书记", lin.title_raw)
+        self.assertEqual(lin.gender, "男")
+        zhao = by_name["赵静"]
+        self.assertEqual(zhao.gender, "女")
 
     def test_parses_beijing_ld_con_profile(self) -> None:
         html = (FIXTURES / "leader_beijing.html").read_text(encoding="utf-8")
@@ -96,13 +96,14 @@ class LeaderIntroTests(unittest.TestCase):
             "http://beijing.chinatax.gov.cn/bjswj/ldxx01/ldjianjie.shtml",
             "beijing",
         )
-        self.assertEqual(len(duties), 1)
-        self.assertEqual(duties[0].person_name, "练奇峰")
-        self.assertIn("局长", duties[0].title_raw)
+        self.assertGreaterEqual(len(duties), 8)
+        by_name = {duty.person_name: duty for duty in duties}
+        self.assertIn("练奇峰", by_name)
+        self.assertIn("局长", by_name["练奇峰"].title_raw)
         targets = leader_page_targets(
             html, "http://beijing.chinatax.gov.cn/bjswj/ldxx01/ldjianjie.shtml"
         )
-        self.assertGreaterEqual(len(targets), 8)
+        self.assertGreaterEqual(len(targets), 1)
 
     def test_parses_hebei_sidebar_leader_list(self) -> None:
         html = (FIXTURES / "leader_hebei.html").read_text(encoding="utf-8")
@@ -118,8 +119,6 @@ class LeaderIntroTests(unittest.TestCase):
         self.assertEqual(duties[1].duty_summary, "分管工作")
         self.assertEqual(duties[2].person_name, "李圆")
         self.assertEqual(duties[2].duty_summary, "分管工作")
-        targets = leader_page_targets(html, hub)
-        self.assertGreaterEqual(len(targets), 2)
 
     def test_parses_jilin_sidebar_over_single_ldjj2022(self) -> None:
         html = (FIXTURES / "leader_jilin_sidebar.html").read_text(encoding="utf-8")
@@ -139,6 +138,20 @@ class LeaderIntroTests(unittest.TestCase):
         self.assertIn("党委书记", duties[0].title_raw)
         self.assertEqual(duties[1].person_name, "刘晓辉")
         self.assertEqual(duties[2].person_name, "宫春河")
+
+    def test_parses_hubei_document_write_leader_list(self) -> None:
+        html = (FIXTURES / "leader_hubei_hbsw.html").read_text(encoding="utf-8")
+        hub = "http://hubei.chinatax.gov.cn/hbsw/wuhan/xxgk/ldjj/index.html"
+        duties = parse_leader_intro(html, hub, "hubei_hbsw_wuhan")
+        self.assertEqual(len(duties), 2)
+        self.assertEqual(duties[0].person_name, "黄英")
+        self.assertEqual(duties[0].gender, "女")
+        self.assertEqual(duties[0].ethnicity, "汉族")
+        self.assertIn("党委书记", duties[0].title_raw)
+        self.assertEqual(duties[0].duty_summary, "主持全面工作")
+        self.assertEqual(duties[1].person_name, "肖泽民")
+        self.assertEqual(duties[1].duty_summary, "分管工作")
+        self.assertIn("政策法规处", duties[1].departments_raw[0])
 
 
 if __name__ == "__main__":

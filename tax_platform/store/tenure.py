@@ -20,6 +20,7 @@ def build_current_from_history(
     *,
     leader: dict[str, Any] | None = None,
     person_title: str | None = None,
+    profile_bureau_code: str | None = None,
 ) -> dict[str, Any]:
     """Derive current post from reverse-chrono history (+ optional leader intro)."""
     # Walk newest → oldest. Latest appoint wins only if no newer leave closes that post.
@@ -50,10 +51,32 @@ def build_current_from_history(
         else:
             departments = list(raw_deps)
 
+    # Local 领导简介 wins over a foreign / mis-tagged appoint (same name elsewhere,
+    # or roster row whose bureau_name collapsed to 「国家税务总局」).
+    if open_post and leader and leader.get("title_raw"):
+        post_bureau = (open_post.get("bureau_code") or "").strip()
+        profile = (profile_bureau_code or leader.get("bureau_code") or "").strip()
+        unit = str(open_post.get("unit") or "").strip()
+        foreign = bool(post_bureau and profile and post_bureau != profile)
+        bare_sta = unit in {"国家税务总局", "总局"} and profile and profile != "sta"
+        if foreign or bare_sta:
+            open_post = None
+
     if open_post:
         nt = normalize_title(open_post.get("title") or title)
+        unit = open_post.get("unit")
+        # Roster noise: event stored under district but bureau_name=国家税务总局.
+        if (
+            profile_bureau_code
+            and profile_bureau_code != "sta"
+            and str(unit or "").strip() in {"国家税务总局", "总局"}
+        ):
+            try:
+                unit = get_site(profile_bureau_code).name
+            except KeyError:
+                pass
         return {
-            "unit": open_post.get("unit"),
+            "unit": unit,
             "department": open_post.get("department") or (departments[0] if departments else None),
             "title": nt.canonical if nt else (open_post.get("title") or title),
             "departments": departments,
@@ -67,8 +90,14 @@ def build_current_from_history(
 
     if leader:
         nt = normalize_title(title)
+        unit = None
+        if profile_bureau_code:
+            try:
+                unit = get_site(profile_bureau_code).name
+            except KeyError:
+                unit = None
         return {
-            "unit": None,
+            "unit": unit,
             "department": departments[0] if departments else None,
             "title": nt.canonical if nt else title,
             "departments": departments,
@@ -232,6 +261,7 @@ def recompute_person_current(
         history,
         leader=leader_dict,
         person_title=person_title,
+        profile_bureau_code=bureau_code,
     )
     dept = current.get("department")
     if not dept and current.get("departments"):
