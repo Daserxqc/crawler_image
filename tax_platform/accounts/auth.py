@@ -56,11 +56,41 @@ def normalize_phone(phone: str) -> str:
 def normalize_account(channel: str, account: str) -> tuple[str, str]:
     """Return (channel, identity_key stored in login_codes / users.email)."""
     channel = (channel or "email").strip().lower()
+    account = (account or "").strip()
+    # Auto-correct common client mistakes (phone typed while channel=email).
+    if channel == "email" and "@" not in account:
+        cleaned = account.replace(" ", "").replace("-", "")
+        if PHONE_RE.fullmatch(cleaned) or PHONE_RE.fullmatch(
+            cleaned[2:] if cleaned.startswith("86") else cleaned
+        ):
+            channel = "phone"
+    if channel == "phone" and "@" in account:
+        channel = "email"
     if channel == "email":
         return "email", normalize_email(account)
     if channel in {"phone", "mobile", "sms"}:
         return "phone", f"{PHONE_PREFIX}{normalize_phone(account)}"
     raise ValueError("登录方式须为 email 或 phone")
+
+
+def resolve_login_payload(payload: dict[str, Any]) -> tuple[str, str]:
+    """Pick channel + account from a request body, with phone/email autofix."""
+    account = str(
+        payload.get("account")
+        or payload.get("phone")
+        or payload.get("email")
+        or ""
+    ).strip()
+    channel = str(payload.get("channel") or "").strip().lower()
+    if not channel:
+        if payload.get("phone") and not payload.get("email"):
+            channel = "phone"
+        elif "@" in account:
+            channel = "email"
+        else:
+            cleaned = account.replace(" ", "").replace("-", "")
+            channel = "phone" if PHONE_RE.fullmatch(cleaned) else "email"
+    return normalize_account(channel, account)
 
 
 def display_account(identity: str) -> str:
@@ -91,22 +121,27 @@ def _user_payload(user_id: int, identity: str) -> dict[str, Any]:
 
 
 def request_login_code(
-    account: str,
+    account: str = "",
     *,
     channel: str = "email",
     email: str | None = None,
+    payload: dict[str, Any] | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Create a 6-digit OTP. Dev mode returns the plaintext code.
 
+    Prefer ``payload={...}`` so channel/account are resolved together.
     ``email`` is accepted as an alias of ``account`` for backward compatibility.
     """
     owns = conn is None
     db = conn or connect()
-    if email and not account:
-        account = email
-        channel = "email"
-    channel, identity = normalize_account(channel, account)
+    if payload is not None:
+        channel, identity = resolve_login_payload(payload)
+    else:
+        if email and not account:
+            account = email
+            channel = "email"
+        channel, identity = normalize_account(channel, account)
     code = f"{secrets.randbelow(1_000_000):06d}"
     now = _now()
     expires = now + timedelta(minutes=CODE_TTL_MINUTES)
@@ -135,19 +170,24 @@ def request_login_code(
 
 
 def verify_login_code(
-    account: str,
-    code: str,
+    account: str = "",
+    code: str = "",
     *,
     channel: str = "email",
     email: str | None = None,
+    payload: dict[str, Any] | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     owns = conn is None
     db = conn or connect()
-    if email and not account:
-        account = email
-        channel = "email"
-    channel, identity = normalize_account(channel, account)
+    if payload is not None:
+        channel, identity = resolve_login_payload(payload)
+        code = str(payload.get("code") or code or "")
+    else:
+        if email and not account:
+            account = email
+            channel = "email"
+        channel, identity = normalize_account(channel, account)
     code = (code or "").strip()
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("验证码应为 6 位数字")

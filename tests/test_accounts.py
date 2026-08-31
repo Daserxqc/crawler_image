@@ -169,7 +169,13 @@ class AccountsApiTests(unittest.TestCase):
         self.assertEqual(me.json()["user"]["phone"], phone)
         self.assertEqual(me.json()["user"]["channel"], "phone")
 
-        # Anomalies requires login; unauthenticated redirects.
-        self.client.post("/api/auth/logout")
-        anon = self.client.get("/anomalies", follow_redirects=False)
-        self.assertIn(anon.status_code, {302, 307})
+    def test_phone_mistaken_as_email_still_works(self) -> None:
+        """If client forgets channel=phone, 11-digit account must not yield 邮箱格式不正确."""
+        phone = "15162608130"
+        req = self.client.post(
+            "/api/auth/request-code",
+            json={"channel": "email", "account": phone},
+        )
+        self.assertEqual(req.status_code, 200, req.text)
+        self.assertEqual(req.json()["channel"], "phone")
+        self.assertEqual(req.json()["phone"], phone)

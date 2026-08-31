@@ -23,6 +23,7 @@
 
   let channel = "email"; // email | phone
   let pendingAccount = "";
+  let pendingChannel = "email";
   let resendTimer = null;
   let resendLeft = 0;
   let verifying = false;
@@ -93,22 +94,20 @@
   };
 
   const requestCode = async (account) => {
-    const data = await apiPost("/api/auth/request-code", {
-      channel,
-      account,
-    });
+    const body =
+      channel === "phone"
+        ? { channel: "phone", account, phone: account }
+        : { channel: "email", account, email: account };
+    const data = await apiPost("/api/auth/request-code", body);
     pendingAccount = data.account || account;
+    pendingChannel = data.channel || channel;
     sentAccount.textContent = pendingAccount;
     codeInput.value = "";
     showPanel("code");
     startResendTimer();
     if (data.dev_code) {
       codeInput.value = data.dev_code;
-      setStatus(
-        codeStatus,
-        `开发模式：验证码 ${data.dev_code} 已填入，正在登录…`,
-        "ok"
-      );
+      setStatus(codeStatus, "验证码已填入，正在登录…", "ok");
       window.setTimeout(() => {
         if (codeInput.value.length === 6 && !verifying) {
           codeForm.requestSubmit();
@@ -117,7 +116,7 @@
     } else {
       setStatus(
         codeStatus,
-        channel === "phone" ? "验证码已发送，请查看手机短信。" : "验证码已发送，请查收邮箱。",
+        pendingChannel === "phone" ? "验证码已发送，请查看手机短信。" : "验证码已发送，请查收邮箱。",
         "ok"
       );
     }
@@ -168,6 +167,7 @@
       return;
     }
     const account = pendingAccount || currentAccount();
+    const useChannel = pendingChannel || channel;
     if (!account) {
       setStatus(codeStatus, "请先获取验证码。", "error");
       showPanel("account");
@@ -178,8 +178,11 @@
     verifyBtn.disabled = true;
     verifyBtn.textContent = "登录中…";
     try {
-      await apiPost("/api/auth/verify", { channel, account, code });
-      setStatus(codeStatus, "登录成功，正在跳转…", "ok");
+      const body =
+        useChannel === "phone"
+          ? { channel: "phone", account, phone: account, code }
+          : { channel: "email", account, email: account, code };
+      await apiPost("/api/auth/verify", body);      setStatus(codeStatus, "登录成功，正在跳转…", "ok");
       stopResendTimer();
       window.location.href = next;
     } catch (err) {
@@ -218,6 +221,7 @@
   changeBtn.addEventListener("click", () => {
     stopResendTimer();
     pendingAccount = "";
+    pendingChannel = channel;
     codeInput.value = "";
     setStatus(codeStatus, "");
     showPanel("account");

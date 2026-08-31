@@ -89,9 +89,7 @@ def ui_anomalies(request: Request):
 def api_request_code(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     conn = _db()
     try:
-        account = str(payload.get("account") or payload.get("email") or payload.get("phone") or "")
-        channel = str(payload.get("channel") or ("phone" if payload.get("phone") else "email"))
-        return auth.request_login_code(account, channel=channel, conn=conn)
+        return auth.request_login_code(payload=payload, conn=conn)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
@@ -102,14 +100,7 @@ def api_request_code(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 def api_verify(response: Response, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     conn = _db()
     try:
-        account = str(payload.get("account") or payload.get("email") or payload.get("phone") or "")
-        channel = str(payload.get("channel") or ("phone" if payload.get("phone") else "email"))
-        result = auth.verify_login_code(
-            account,
-            str(payload.get("code") or ""),
-            channel=channel,
-            conn=conn,
-        )
+        result = auth.verify_login_code(payload=payload, conn=conn)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
