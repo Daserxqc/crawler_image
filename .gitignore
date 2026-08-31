@@ -11,3 +11,4 @@ Thumbs.db
 # One-off debug / probe scripts at repo root
 /_*.py
 /_*.txt
+scripts/_*.py
