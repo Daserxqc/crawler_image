@@ -36,21 +36,7 @@ def _bureau_name(code: str) -> str:
         return code
 
 
-def _event_matches_watch(event: sqlite3.Row, watch: sqlite3.Row) -> bool:
-    if watch["target_type"] == "bureau":
-        return event["bureau_code"] == watch["target_id"]
-    if watch["target_type"] == "person":
-        target = watch["target_id"]
-        # person id is usually ``bureau:name``; also allow bare name.
-        if ":" in target:
-            bureau, name = target.split(":", 1)
-            return event["person_name"] == name and (
-                not bureau or event["bureau_code"] == bureau
-            )
-        return event["person_name"] == target
-    return False
-
-
+from tax_platform.accounts.watch_match import event_matches_watch
 def _format_event_line(event: sqlite3.Row) -> str:
     ctype = classify_change(
         action=event["action"],
@@ -107,7 +93,7 @@ def collect_pending_for_user(
 
     matched: list[dict[str, Any]] = []
     for event in events:
-        hit_watches = [dict(w) for w in watches if _event_matches_watch(event, w)]
+        hit_watches = [dict(w) for w in watches if event_matches_watch(event, w)]
         if not hit_watches:
             continue
         matched.append(

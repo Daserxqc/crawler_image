@@ -55,7 +55,15 @@
             <button class="btn" type="submit" id="changes-btn">查看</button>
             <button class="btn secondary" type="button" id="reset-btn">重置</button>
           </div>
+          <div class="field field-span-2 watch-only-field">
+            <label class="checkbox-label" for="watch_only">
+              <input id="watch_only" name="watch_only" type="checkbox" />
+              仅看我的关注
+            </label>
+            <span class="muted watch-only-hint" id="watch-only-hint"></span>
+          </div>
         </form>
+        <div class="watch-bar" id="changes-watch-bar" hidden aria-label="关注当前地区"></div>
       </section>
 
       <div class="results-summary" id="meta">加载中…</div>
@@ -64,7 +72,7 @@
     </div>
   </main>
 
-  <script src="/static/js/common.js?v=11"></script>
-  <script src="/static/js/changes.js?v=2"></script>
+  <script src="/static/js/common.js?v=13"></script>
+  <script src="/static/js/changes.js?v=3"></script>
 </body>
 </html>

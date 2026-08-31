@@ -244,6 +244,182 @@ function renderStatsStrip(container, stats) {
     .join("");
 }
 
+/** ── Watch helpers (PR10 UI hooks) ── */
+
+let _authCache = null;
+let _watchesCache = null;
+
+async function fetchAuthState(force = false) {
+  if (!force && _authCache) return _authCache;
+  _authCache = await apiGet("/api/auth/me");
+  return _authCache;
+}
+
+async function fetchUserWatches(force = false) {
+  const auth = await fetchAuthState(force);
+  if (!auth.authenticated) {
+    _watchesCache = [];
+    return _watchesCache;
+  }
+  if (!force && _watchesCache) return _watchesCache;
+  const data = await apiGet("/api/watches");
+  _watchesCache = data.items || [];
+  return _watchesCache;
+}
+
+function invalidateWatchCache() {
+  _watchesCache = null;
+}
+
+function buildDepartmentTargetId(bureauCode, department) {
+  return `${String(bureauCode || "").trim()}::${String(department || "").trim()}`;
+}
+
+function buildPostTargetId(bureauCode, department, title = "") {
+  const parts = [String(bureauCode || "").trim(), String(department || "").trim()];
+  const t = String(title || "").trim();
+  if (t) parts.push(t);
+  return parts.join("::");
+}
+
+function parseWatchTarget(targetType, targetId) {
+  const type = String(targetType || "").trim();
+  const id = String(targetId || "").trim();
+  if (type === "bureau") {
+    return { bureau_code: id, department: null, title: null, person_name: null };
+  }
+  if (type === "person") {
+    if (id.includes(":")) {
+      const [bureau_code, person_name] = id.split(":", 2);
+      return { bureau_code, department: null, title: null, person_name };
+    }
+    return { bureau_code: null, department: null, title: null, person_name: id };
+  }
+  if (type === "department" || type === "post") {
+    const parts = id.split("::");
+    return {
+      bureau_code: parts[0] || null,
+      department: parts[1] || null,
+      title: type === "post" && parts[2] ? parts[2] : null,
+      person_name: null,
+    };
+  }
+  return { bureau_code: null, department: null, title: null, person_name: null };
+}
+
+function eventMatchesWatch(event, watch) {
+  const parsed = parseWatchTarget(watch.target_type, watch.target_id);
+  const bureau = event.bureau_code;
+  const person = event.person_name;
+  const dept = event.department_raw || event.department || "";
+  const title = event.title_raw || event.title || "";
+  const type = watch.target_type;
+  if (type === "bureau") return bureau === parsed.bureau_code;
+  if (type === "person") {
+    if (parsed.person_name !== person) return false;
+    if (parsed.bureau_code) return bureau === parsed.bureau_code;
+    return true;
+  }
+  if (type === "department") {
+    if (bureau !== parsed.bureau_code) return false;
+    return Boolean(parsed.department && dept.includes(parsed.department));
+  }
+  if (type === "post") {
+    if (bureau !== parsed.bureau_code) return false;
+    if (parsed.department && !dept.includes(parsed.department)) return false;
+    if (parsed.title && !title.includes(parsed.title)) return false;
+    return Boolean(parsed.department || parsed.title);
+  }
+  return false;
+}
+
+function changeItemMatchesWatches(item, watches) {
+  if (!watches?.length) return false;
+  return watches.some((w) => eventMatchesWatch(item, w));
+}
+
+async function mountWatchButton(container, spec) {
+  if (!container) return null;
+  const {
+    target_type: targetType,
+    target_id: targetId,
+    label,
+    loginNext = window.location.pathname + window.location.search,
+    idleText = "关注",
+    activeText = "已关注",
+    loginText = "登录后关注",
+    className = "btn secondary watch-btn",
+  } = spec;
+  if (!targetType || !targetId) {
+    container.hidden = true;
+    return null;
+  }
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = className;
+  btn.setAttribute("aria-label", idleText);
+  btn.textContent = idleText;
+  container.appendChild(btn);
+
+  const refresh = async () => {
+    btn.disabled = true;
+    try {
+      const auth = await fetchAuthState();
+      if (!auth.authenticated) {
+        btn.textContent = loginText;
+        btn.dataset.mode = "login";
+        return;
+      }
+      const check = await apiGet("/api/watches/check", {
+        target_type: targetType,
+        target_id: targetId,
+      });
+      if (check.watching) {
+        btn.textContent = activeText;
+        btn.dataset.mode = "active";
+        btn.dataset.watchId = String(check.watch?.id || "");
+      } else {
+        btn.textContent = idleText;
+        btn.dataset.mode = "idle";
+        delete btn.dataset.watchId;
+      }
+    } catch {
+      btn.hidden = true;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  btn.addEventListener("click", async () => {
+    if (btn.dataset.mode === "login") {
+      window.location.href = `/login?next=${encodeURIComponent(loginNext)}`;
+      return;
+    }
+    btn.disabled = true;
+    try {
+      if (btn.dataset.mode === "active" && btn.dataset.watchId) {
+        await apiDelete(`/api/watches/${btn.dataset.watchId}`);
+      } else {
+        await apiPost("/api/watches", {
+          target_type: targetType,
+          target_id: targetId,
+          label: label || null,
+        });
+      }
+      invalidateWatchCache();
+      await refresh();
+    } catch (err) {
+      window.alert(err.message || String(err));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  await refresh();
+  return btn;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   if (!page) return;

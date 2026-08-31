@@ -112,6 +112,11 @@ def ui_departments() -> FileResponse:
     return _html(STATIC_DIR / "departments.html")
 
 
+@app.get("/posts")
+def ui_posts() -> FileResponse:
+    return _html(STATIC_DIR / "posts.html")
+
+
 @app.get("/people/{person_id:path}")
 def ui_person(person_id: str) -> FileResponse:
     """SPA-style: any /people/... path serves the profile shell."""

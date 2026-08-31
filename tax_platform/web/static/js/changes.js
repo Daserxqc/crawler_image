@@ -8,12 +8,67 @@
   const bureauSelect = qs("#bureau_code");
   const deptInput = qs("#department");
   const typeSelect = qs("#change_type");
+  const watchOnly = qs("#watch_only");
+  const watchHint = qs("#watch-only-hint");
+  const watchBar = qs("#changes-watch-bar");
 
   let allBureaus = [];
   let staUnits = [];
+  let userWatches = [];
 
   function isHeadquartersLevel() {
     return levelSelect.value === "headquarters";
+  }
+
+  function selectedBureauForWatch() {
+    if (isHeadquartersLevel()) {
+      const unit = bureauSelect.value;
+      if (!unit) return null;
+      return { code: "sta", label: "国家税务总局" };
+    }
+    const code = bureauSelect.value;
+    if (!code) return null;
+    const site = allBureaus.find((b) => b.code === code);
+    return {
+      code,
+      label: site ? bureauDisplayName(site, allBureaus) : code,
+    };
+  }
+
+  async function refreshChangesWatchBar() {
+    if (!watchBar) return;
+    watchBar.innerHTML = "";
+    const bureau = selectedBureauForWatch();
+    if (!bureau) {
+      watchBar.hidden = true;
+      return;
+    }
+    watchBar.hidden = false;
+    watchBar.innerHTML = `<span class="watch-bar-label">当前地区：${escapeHtml(bureau.label)}</span>`;
+    const slot = document.createElement("span");
+    watchBar.appendChild(slot);
+    await mountWatchButton(slot, {
+      target_type: "bureau",
+      target_id: bureau.code,
+      label: bureau.label,
+      idleText: "关注此单位",
+      activeText: "已关注单位",
+      loginText: "登录后关注单位",
+    });
+  }
+
+  async function refreshWatchOnlyHint() {
+    if (!watchHint) return;
+    const auth = await fetchAuthState();
+    if (!auth.authenticated) {
+      watchHint.textContent = "（需登录）";
+      if (watchOnly) watchOnly.disabled = false;
+      return;
+    }
+    userWatches = await fetchUserWatches();
+    watchHint.textContent = userWatches.length
+      ? `（已关注 ${userWatches.length} 项）`
+      : "（暂无关注，请先在人员/单位页添加）";
   }
 
   function fillSelect(select, options, emptyLabel) {
@@ -174,7 +229,25 @@
           return false;
         });
       }
-      meta.textContent = `共 ${data.total ?? 0} 条${items.length !== (data.items || []).length ? `（本页筛选后 ${items.length} 条）` : ""}`;
+      if (watchOnly?.checked) {
+        const auth = await fetchAuthState();
+        if (!auth.authenticated) {
+          status.hidden = false;
+          status.className = "status error";
+          status.textContent = "请先登录后再使用「仅看我的关注」";
+          rows.innerHTML = "";
+          meta.textContent = "需要登录";
+          return;
+        }
+        userWatches = await fetchUserWatches(true);
+        if (!userWatches.length) {
+          items = [];
+        } else {
+          items = items.filter((item) => changeItemMatchesWatches(item, userWatches));
+        }
+      }
+      const watchNote = watchOnly?.checked ? " · 仅关注" : "";
+      meta.textContent = `共 ${data.total ?? 0} 条${items.length !== (data.items || []).length ? `（本页筛选后 ${items.length} 条）` : ""}${watchNote}`;
       rows.innerHTML =
         items
           .map((item) => {
@@ -217,16 +290,23 @@
 
   form.addEventListener("submit", load);
   qs("#reset-btn").addEventListener("click", resetForm);
-  levelSelect.addEventListener("change", () => onRegionFiltersChange().catch(() => {}));
+  watchOnly?.addEventListener("change", () => load().catch(() => {}));
+  levelSelect.addEventListener("change", () => {
+    onRegionFiltersChange()
+      .then(refreshChangesWatchBar)
+      .catch(() => {});
+  });
   categorySelect.addEventListener("change", () => {
     rebuildBureauOptions();
+    refreshChangesWatchBar().catch(() => {});
   });
+  bureauSelect.addEventListener("change", () => refreshChangesWatchBar().catch(() => {}));
 
   Promise.all([loadLevels(), loadBureaus(), loadStaUnits()])
     .then(() => {
       rebuildCategoryOptions();
       rebuildBureauOptions();
-      return load();
+      return Promise.all([refreshWatchOnlyHint(), refreshChangesWatchBar(), load()]);
     })
     .catch((err) => {
       status.hidden = false;

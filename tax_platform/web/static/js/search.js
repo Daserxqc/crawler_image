@@ -10,6 +10,7 @@
   const deptSelect = qs("#department");
   const titleSelect = qs("#title");
   const nameInput = qs("#name");
+  const watchBar = qs("#search-watch-bar");
 
   let allBureaus = [];
   let staUnits = [];
@@ -21,6 +22,43 @@
 
   function isHeadquartersLevel() {
     return levelSelect.value === "headquarters";
+  }
+
+  function selectedBureauForWatch() {
+    if (isHeadquartersLevel()) {
+      const unit = bureauSelect.value;
+      if (!unit) return null;
+      return { code: "sta", label: "国家税务总局" };
+    }
+    const code = bureauSelect.value;
+    if (!code) return null;
+    const site = allBureaus.find((b) => b.code === code);
+    return {
+      code,
+      label: site ? bureauDisplayName(site, allBureaus) : code,
+    };
+  }
+
+  async function refreshSearchWatchBar() {
+    if (!watchBar) return;
+    watchBar.innerHTML = "";
+    const bureau = selectedBureauForWatch();
+    if (!bureau) {
+      watchBar.hidden = true;
+      return;
+    }
+    watchBar.hidden = false;
+    watchBar.innerHTML = `<span class="watch-bar-label">当前地区：${escapeHtml(bureau.label)}</span>`;
+    const slot = document.createElement("span");
+    watchBar.appendChild(slot);
+    await mountWatchButton(slot, {
+      target_type: "bureau",
+      target_id: bureau.code,
+      label: bureau.label,
+      idleText: "关注此单位",
+      activeText: "已关注单位",
+      loginText: "登录后关注单位",
+    });
   }
 
   function bureauParam() {
@@ -455,13 +493,21 @@
   form.addEventListener("submit", runSearch);
   qs("#reset-btn").addEventListener("click", resetForm);
   qs("#export-btn").addEventListener("click", exportCsv);
-  levelSelect.addEventListener("change", () => onRegionFiltersChange().catch(() => {}));
+  levelSelect.addEventListener("change", () => {
+    onRegionFiltersChange()
+      .then(refreshSearchWatchBar)
+      .catch(() => {});
+  });
   categorySelect.addEventListener("change", () => {
     rebuildBureauOptions();
     if (lastHits.length) renderHits(lastHits);
     refreshFilterOptions().catch(() => {});
+    refreshSearchWatchBar().catch(() => {});
   });
-  bureauSelect.addEventListener("change", () => refreshFilterOptions().catch(() => {}));
+  bureauSelect.addEventListener("change", () => {
+    refreshFilterOptions().catch(() => {});
+    refreshSearchWatchBar().catch(() => {});
+  });
 
   const boot = new URLSearchParams(window.location.search);
   ["name", "department", "title", "org_level", "bureau_code"].forEach((key) => {
@@ -472,6 +518,7 @@
     .then(refreshFilterOptions)
     .then(() => {
       loadStats().catch(() => {});
+      refreshSearchWatchBar().catch(() => {});
       if (boot.get("name") || boot.get("department") || boot.get("title")) {
         runSearch();
       }

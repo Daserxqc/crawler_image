@@ -22,11 +22,13 @@
             <select id="target_type" name="target_type">
               <option value="person">人员</option>
               <option value="bureau">单位</option>
+              <option value="department">科室</option>
+              <option value="post">岗位</option>
             </select>
           </div>
           <div class="field field-span-2">
             <label for="target_id">标识</label>
-            <input id="target_id" name="target_id" required placeholder="人员：bureau:姓名 或 姓名；单位：站点 code，如 pdtax" />
+            <input id="target_id" name="target_id" required placeholder="人员 bureau:姓名；单位 pdtax；科室 pdtax::政策法规处；岗位 pdtax::政策法规处::处长" />
           </div>
           <div class="field">
             <label for="label">显示名（可选）</label>

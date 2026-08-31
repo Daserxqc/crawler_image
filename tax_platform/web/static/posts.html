@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>岗位档案 · 税局人事检索</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css?v=24" />
+</head>
+<body class="app" data-page="posts">
+  <header class="app-header" id="app-header"></header>
+  <main class="app-main">
+    <div class="shell">
+      <section class="panel-card" aria-labelledby="posts-heading">
+        <h1 class="panel-heading" id="posts-heading">岗位现任 / 历任</h1>
+        <form class="filter-grid" id="posts-form" autocomplete="off">
+          <div class="field field-span-2">
+            <label for="bureau_code">单位 code</label>
+            <input id="bureau_code" name="bureau_code" required placeholder="如 pdtax / shanghai / sta" />
+          </div>
+          <div class="field field-span-2">
+            <label for="department">科室</label>
+            <input id="department" name="department" required placeholder="如 政策法规处" />
+          </div>
+          <div class="field field-span-2">
+            <label for="title">职务（可选，收窄岗位）</label>
+            <input id="title" name="title" placeholder="如 处长" />
+          </div>
+          <div class="filter-actions">
+            <button class="btn" type="submit" id="posts-btn">查询</button>
+          </div>
+        </form>
+        <div class="watch-bar" id="posts-watch-bar" hidden aria-label="关注此岗位"></div>
+        <div id="posts-out" class="panel-card" style="margin-top:1rem;padding:0;border:none;box-shadow:none;">
+          <div class="status muted">请填写单位与科室后查询</div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/js/common.js?v=13"></script>
+  <script src="/static/js/posts.js?v=1"></script>
+</body>
+</html>

@@ -9,7 +9,9 @@ from typing import Any
 from tax_platform.accounts.schema import connect
 from tax_platform.config.sites import get_site
 
-ALLOWED_TYPES = {"person", "bureau"}
+from tax_platform.accounts.watch_match import parse_watch_target
+
+ALLOWED_TYPES = {"person", "bureau", "department", "post"}
 
 
 def _iso_now() -> str:
@@ -29,7 +31,7 @@ def add_watch(
     target_type = (target_type or "").strip()
     target_id = (target_id or "").strip()
     if target_type not in ALLOWED_TYPES:
-        raise ValueError("target_type must be person|bureau")
+        raise ValueError("target_type must be person|bureau|department|post")
     if not target_id:
         raise ValueError("target_id is required")
 
@@ -41,6 +43,13 @@ def add_watch(
             display = target_id
     if display is None and target_type == "person":
         display = target_id.split(":", 1)[-1]
+    if display is None and target_type == "department":
+        parsed = parse_watch_target(target_type, target_id)
+        display = parsed.get("department") or target_id
+    if display is None and target_type == "post":
+        parsed = parse_watch_target(target_type, target_id)
+        bits = [parsed.get("department"), parsed.get("title")]
+        display = " · ".join(b for b in bits if b) or target_id
 
     try:
         cur = db.execute(

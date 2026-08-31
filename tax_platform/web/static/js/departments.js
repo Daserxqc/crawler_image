@@ -6,12 +6,72 @@
   const categorySelect = qs("#region_category");
   const bureauSelect = qs("#bureau_code");
   const deptSelect = qs("#department");
+  const watchBar = qs("#dept-watch-bar");
 
   let allBureaus = [];
+  let lastBureauCode = null;
+  let lastDepartment = null;
   let staUnits = [];
 
   function isHeadquartersLevel() {
     return levelSelect.value === "headquarters";
+  }
+
+  function resolveBureauCodeForWatch() {
+    if (isHeadquartersLevel()) {
+      const unit = bureauSelect.value;
+      if (!unit) return null;
+      return "sta";
+    }
+    return bureauSelect.value || null;
+  }
+
+  async function refreshDeptWatchBar(bureauCode, department) {
+    if (!watchBar) return;
+    watchBar.innerHTML = "";
+    if (!bureauCode) {
+      watchBar.hidden = true;
+      return;
+    }
+    watchBar.hidden = false;
+    const bureauLabelText = bureauLabel(bureauCode);
+    watchBar.innerHTML = `<span class="watch-bar-label">${escapeHtml(bureauLabelText)}${
+      department ? ` · ${escapeHtml(department)}` : ""
+    }</span>`;
+    const actions = document.createElement("span");
+    actions.className = "watch-bar-actions";
+    watchBar.appendChild(actions);
+
+    const bureauSlot = document.createElement("span");
+    actions.appendChild(bureauSlot);
+    await mountWatchButton(bureauSlot, {
+      target_type: "bureau",
+      target_id: bureauCode,
+      label: bureauLabelText,
+      idleText: "关注此单位",
+      activeText: "已关注单位",
+      loginText: "登录后关注单位",
+    });
+
+    if (department) {
+      const deptSlot = document.createElement("span");
+      actions.appendChild(deptSlot);
+      await mountWatchButton(deptSlot, {
+        target_type: "department",
+        target_id: buildDepartmentTargetId(bureauCode, department),
+        label: `${bureauLabelText} · ${department}`,
+        idleText: "关注此科室",
+        activeText: "已关注科室",
+        loginText: "登录后关注科室",
+      });
+      const link = document.createElement("a");
+      link.className = "btn secondary";
+      link.href = `/posts?bureau_code=${encodeURIComponent(bureauCode)}&department=${encodeURIComponent(
+        department
+      )}`;
+      link.textContent = "岗位档案";
+      actions.appendChild(link);
+    }
   }
 
   function fillSelect(select, options, emptyLabel) {
@@ -199,6 +259,9 @@
         })
         .join("");
       const deptLabel = data.browse_all ? "全部科室" : data.department || department || "全部";
+      lastBureauCode = bureauParam() || bureauSelect.value || null;
+      lastDepartment = data.browse_all ? null : deptLabel;
+      await refreshDeptWatchBar(lastBureauCode, lastDepartment);
       out.innerHTML = `
         <div class="results-summary">科室：${escapeHtml(deptLabel)}
           · 分管 ${escapeHtml(data.supervisor_count ?? 0)} · 任职 ${escapeHtml(data.staff_count ?? 0)}${
@@ -213,6 +276,13 @@
         }</ul>
         <h2 class="results-group-title">任职人员</h2>
         <ul>${staff || "<li class='muted'>暂无匹配任职</li>"}</ul>
+        ${
+          !data.browse_all && lastBureauCode && lastDepartment
+            ? `<p><a class="btn secondary" href="/posts?bureau_code=${encodeURIComponent(
+                lastBureauCode
+              )}&department=${encodeURIComponent(lastDepartment)}">查看该科室岗位档案 →</a></p>`
+            : ""
+        }
         ${upward ? `<h2 class="results-group-title">层级穿透</h2><ul>${upward}</ul>` : ""}
       `;
     } catch (err) {
