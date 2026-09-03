@@ -1,6 +1,7 @@
 (() => {
   const form = qs("#dept-form");
   const out = qs("#out");
+  const meta = qs("#dept-meta");
   const status = qs("#status");
   const levelSelect = qs("#org_level");
   const categorySelect = qs("#region_category");
@@ -13,14 +14,18 @@
   let lastDepartment = null;
   let staUnits = [];
   let staffOffset = 0;
-  const STAFF_PAGE = 100;
+  const STAFF_PAGE = 50;
 
   function isHeadquartersLevel() {
     return levelSelect.value === "headquarters";
   }
 
+  function isHqCategory() {
+    return HQ_CATEGORIES.includes(categorySelect.value);
+  }
+
   function resolveBureauCodeForWatch() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       const unit = bureauSelect.value;
       if (!unit) return null;
       return "sta";
@@ -130,7 +135,7 @@
   }
 
   function rebuildBureauOptions() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       fillSelect(
         bureauSelect,
         filteredStaUnits().map((u) => ({ value: u.code, label: u.name })),
@@ -188,7 +193,7 @@
 
   async function onRegionFiltersChange() {
     rebuildCategoryOptions();
-    if (isHeadquartersLevel() && !staUnits.length) {
+    if ((isHeadquartersLevel() || isHqCategory()) && !staUnits.length) {
       await loadStaUnits();
     }
     rebuildBureauOptions();
@@ -196,7 +201,7 @@
   }
 
   function bureauParam() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       const unit = bureauSelect.value;
       if (unit === "sta" || (unit && unit.startsWith("sta"))) return "sta";
       return undefined;
@@ -220,12 +225,17 @@
     if (resetOffset || event?.type === "submit") staffOffset = 0;
     const department = deptSelect.value.trim();
     qs("#dept-btn").disabled = true;
+    if (meta) meta.textContent = "查询中…";
     out.innerHTML = `<div class="status">查询中…</div>`;
     try {
       const data = await apiGet("/api/departments/penetrate", {
         department: department || undefined,
-        org_level: levelSelect.value || undefined,
+        org_level:
+          isHeadquartersLevel() || isHqCategory()
+            ? levelSelect.value || "headquarters"
+            : levelSelect.value || undefined,
         bureau_code: bureauParam(),
+        unit_category: categorySelect.value || undefined,
         staff_limit: STAFF_PAGE,
         staff_offset: staffOffset,
       });
@@ -236,10 +246,22 @@
       const staffCount = data.staff_count ?? staffItems.length;
       const pageLimit = data.staff_limit ?? STAFF_PAGE;
       const pageOffset = data.staff_offset ?? staffOffset;
+      const pageNum = Math.floor(pageOffset / pageLimit) + 1;
+      const pageTotal = Math.max(1, Math.ceil(Math.max(staffCount, 1) / pageLimit));
 
       const deptLabel = data.browse_all ? "全部科室" : data.department || department || "全部";
       lastBureauCode = bureauParam() || bureauSelect.value || null;
       lastDepartment = data.browse_all ? null : deptLabel;
+
+      if (meta) {
+        const bits = [`科室：${deptLabel}`];
+        bits.push(`分管领导 ${leaderCount} 人`);
+        bits.push(`任职人员 ${staffCount} 人`);
+        if (staffCount > pageLimit) {
+          bits.push(`第 ${pageNum}/${pageTotal} 页（本页 ${staffItems.length} 条）`);
+        }
+        meta.textContent = bits.join(" · ");
+      }
 
       const upwardByKey = new Map();
       upwardItems.forEach((u) => {
@@ -313,33 +335,44 @@
 
       await refreshDeptWatchBar(lastBureauCode, lastDepartment);
 
-      const pageNote =
-        staffCount > pageLimit
-          ? `（第 ${Math.floor(pageOffset / pageLimit) + 1} 页 · 每页 ${pageLimit} 条）`
-          : staffCount
-            ? `（共 ${staffCount} 条）`
-            : "";
+      const staffSummary = staffCount
+        ? staffCount > pageLimit
+          ? `本科室任职人员 · ${staffCount}（第 ${pageNum}/${pageTotal} 页，本页 ${staffItems.length} 人）`
+          : `本科室任职人员 · ${staffCount}`
+        : "本科室任职人员";
+      // 分管领导与任职分页无关：只在第 1 页展示，避免每页重复同一批人。
+      const showLeaders = pageOffset === 0;
+      const leadersOpen = showLeaders && !staffCount && leaderCount;
 
       out.innerHTML = `
         <section class="panel-card dept-results" aria-label="科室穿透结果">
-          <div class="results-summary">科室：${escapeHtml(deptLabel)}${escapeHtml(pageNote)}</div>
-          <p class="dept-chain-hint muted">科室 → 分管领导 → 所在地区层级</p>
+          <p class="dept-chain-hint muted">分页只翻「任职人员」；分管领导是整次查询的汇总，仅在第 1 页列出。</p>
 
-          <h2 class="results-group-title">分管领导（向上穿透）${
-            leaderCount ? ` · ${escapeHtml(leaderCount)}` : ""
-          }</h2>
-          <ul class="dept-hit-list">${
-            leaders || `<li class="dept-hit muted">${escapeHtml(leadersEmpty)}</li>`
-          }</ul>
-
-          <details class="dept-staff-block"${staffCount ? " open" : ""}>
-            <summary>本科室任职人员${staffCount ? ` · ${escapeHtml(staffCount)}` : ""}</summary>
+          <details class="dept-staff-block" id="dept-staff-section"${staffCount ? " open" : ""}>
+            <summary>${escapeHtml(staffSummary)}</summary>
             <ul class="dept-hit-list">${
               staff || `<li class="dept-hit muted">暂无匹配任职</li>`
             }</ul>
             <nav class="pagination" id="dept-staff-pager" aria-label="任职人员分页" hidden></nav>
             ${postsLink}
           </details>
+
+          ${
+            showLeaders
+              ? `<details class="dept-staff-block" id="dept-leaders-section"${leadersOpen ? " open" : ""}>
+            <summary>分管领导（向上穿透）${
+              leaderCount ? ` · ${escapeHtml(leaderCount)}` : ""
+            }</summary>
+            <ul class="dept-hit-list">${
+              leaders || `<li class="dept-hit muted">${escapeHtml(leadersEmpty)}</li>`
+            }</ul>
+          </details>`
+              : leaderCount
+                ? `<p class="muted dept-chain-hint">分管领导共 ${escapeHtml(
+                    leaderCount
+                  )} 人（与分页无关，回<a href="#dept-staff-section" id="dept-back-page1">第 1 页</a>查看）</p>`
+                : ""
+          }
         </section>
       `;
 
@@ -353,8 +386,17 @@
           runQuery(null).catch(() => {});
         },
       });
+      qs("#dept-back-page1")?.addEventListener("click", (e) => {
+        e.preventDefault();
+        staffOffset = 0;
+        runQuery(null).catch(() => {});
+      });
+      if (pageOffset > 0) {
+        qs("#dept-staff-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     } catch (err) {
       out.innerHTML = "";
+      if (meta) meta.textContent = "查询失败";
       status.hidden = false;
       status.className = "status error";
       status.textContent = err.message || String(err);
@@ -367,6 +409,7 @@
     form.reset();
     staffOffset = 0;
     out.innerHTML = "";
+    if (meta) meta.textContent = "选择科室或地区后查询；结果含分管领导与任职人员总数";
     status.hidden = true;
     onRegionFiltersChange().catch(() => {});
   }

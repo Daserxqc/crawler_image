@@ -21,7 +21,7 @@ MACRO_CATEGORIES = {
 }
 
 _DISPATCHED_HINTS = ("特派", "纪检组", "派出", "驻")
-_DIRECT_HINTS = ("中心", "学院", "研究所", "培训", "党校", "杂志社", "报社")
+_DIRECT_HINTS = ("中心", "学院", "研究所", "培训", "党校", "杂志社", "报社", "出版社")
 
 
 def short_bureau_name(name: str | None, *, parent_name: str | None = None) -> str:
@@ -251,7 +251,12 @@ def region_display(bureau_code: str, current: dict | None = None) -> str:
             return m.group(1)
     site = resolve_posting_site(bureau_code, current)
     if site is None:
-        return bureau_code
+        # resolve_posting_site may return None for ambiguous units (e.g. bare「稽查局」);
+        # still show the appointing bureau's Chinese name — never leak raw codes like「sta」.
+        try:
+            site = get_site(bureau_code)
+        except KeyError:
+            return "—" if not bureau_code else bureau_code
     if site.level == "district" and site.parent_code:
         try:
             parent = get_site(site.parent_code)

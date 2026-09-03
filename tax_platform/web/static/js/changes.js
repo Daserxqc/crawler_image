@@ -23,8 +23,12 @@
     return levelSelect.value === "headquarters";
   }
 
+  function isHqCategory() {
+    return HQ_CATEGORIES.includes(categorySelect.value);
+  }
+
   function selectedBureauForWatch() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       const unit = bureauSelect.value;
       if (!unit) return null;
       return { code: "sta", label: "国家税务总局" };
@@ -121,7 +125,7 @@
   }
 
   function rebuildBureauOptions() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       fillSelect(
         bureauSelect,
         filteredStaUnits().map((u) => ({ value: u.code, label: u.name })),
@@ -165,7 +169,7 @@
   async function onRegionFiltersChange() {
     const seq = ++regionSeq;
     rebuildCategoryOptions();
-    if (isHeadquartersLevel() && !staUnits.length) {
+    if ((isHeadquartersLevel() || isHqCategory()) && !staUnits.length) {
       await loadStaUnits();
     }
     if (seq !== regionSeq) return;
@@ -205,15 +209,16 @@
   }
 
   function queryParams() {
+    const hqMode = isHeadquartersLevel() || isHqCategory();
     const params = {
-      org_level: levelSelect.value || undefined,
+      org_level: hqMode && !levelSelect.value ? "headquarters" : levelSelect.value || undefined,
       unit_category: categorySelect.value || undefined,
       department: deptSelect.value.trim() || undefined,
       change_type: typeSelect.value || undefined,
       limit,
       offset,
     };
-    if (isHeadquartersLevel()) {
+    if (hqMode) {
       const unit = bureauSelect.value;
       if (unit === "sta" || (unit && unit !== "sta")) {
         params.bureau_code = "sta";

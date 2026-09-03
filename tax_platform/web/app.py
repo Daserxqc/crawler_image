@@ -395,16 +395,20 @@ def api_department_lookup(
     department: str | None = Query(None),
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
+    unit_category: str | None = Query(
+        None, description="internal|direct|dispatched|municipality|province|autonomous"
+    ),
     staff_limit: int = Query(30, ge=0, le=200),
     staff_offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """科室 → 分管领导 + 任职人员。科室可空=按地区浏览全体。"""
-    conn = connect(_db_path())
+    conn = connect(_db_path(), light=True)
     try:
         result = lookup_department(
             department or "",
             org_level=level,
             bureau_code=bureau,
+            unit_category=unit_category,
             staff_limit=staff_limit,
             staff_offset=staff_offset,
             conn=conn,
@@ -420,16 +424,20 @@ def api_department_penetrate(
     department: str | None = Query(None),
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
-    staff_limit: int = Query(100, ge=1, le=200),
+    unit_category: str | None = Query(
+        None, description="internal|direct|dispatched|municipality|province|autonomous"
+    ),
+    staff_limit: int = Query(50, ge=1, le=200),
     staff_offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """层级穿透：科室 → 分管领导 → 单位层级。科室可空=按地区浏览全体。"""
-    conn = connect(_db_path())
+    conn = connect(_db_path(), light=True)
     try:
         result = penetrate_department(
             department or "",
             org_level=level,
             bureau_code=bureau,
+            unit_category=unit_category,
             staff_limit=staff_limit,
             staff_offset=staff_offset,
             conn=conn,
@@ -445,9 +453,9 @@ def api_department_leaders(
     department: str,
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(0, ge=0, le=2000, description="0 = all matches"),
 ) -> dict[str, Any]:
-    conn = connect(_db_path())
+    conn = connect(_db_path(), light=True)
     try:
         items = leaders_for_department(
             department,
@@ -458,7 +466,7 @@ def api_department_leaders(
         )
     finally:
         conn.close()
-    return {"department": department, "items": items}
+    return {"department": department, "total": len(items), "items": items}
 
 
 @app.get("/api/leaders/{name}/departments")
@@ -644,6 +652,9 @@ def api_posts_search(
     title: str | None = None,
     bureau: str | None = Query(None, alias="bureau_code"),
     org_level: str | None = None,
+    unit_category: str | None = Query(
+        None, description="internal|direct|dispatched|municipality|province|autonomous"
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
@@ -655,6 +666,7 @@ def api_posts_search(
             title=title,
             bureau_code=bureau,
             org_level=org_level,
+            unit_category=unit_category,
             limit=limit,
             offset=offset,
             conn=conn,

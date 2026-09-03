@@ -173,6 +173,39 @@ class ChangesAndPostsTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertGreaterEqual(r.json()["total"], 1)
 
+    def test_posts_search_hq_category_filters_not_all_sta(self) -> None:
+        from tax_platform.store.posts import ensure_posts_schema, search_org_posts
+
+        ensure_posts_schema(self.conn)
+        self.conn.execute(
+            """
+            INSERT INTO org_posts (id, bureau_code, department, title, updated_at)
+            VALUES
+              ('sta:office:司长', 'sta', '办公厅', '司长', '2024-01-01'),
+              ('sta:press:社长', 'sta', '中国税务出版社', '社长', '2024-01-01'),
+              ('sta:disp:特派员', 'sta', '驻北京特派员办事处', '特派员', '2024-01-01'),
+              ('shanghai:政策法规处:处长', 'shanghai', '政策法规处', '处长', '2024-01-01')
+            """
+        )
+        self.conn.commit()
+
+        direct = search_org_posts(
+            org_level="headquarters",
+            unit_category="direct",
+            limit=50,
+            conn=self.conn,
+        )
+        self.assertEqual(direct["total"], 1)
+        self.assertEqual(direct["items"][0]["department"], "中国税务出版社")
+
+        dispatched = search_org_posts(
+            unit_category="dispatched",
+            limit=50,
+            conn=self.conn,
+        )
+        self.assertEqual(dispatched["total"], 1)
+        self.assertEqual(dispatched["items"][0]["department"], "驻北京特派员办事处")
+
 
 if __name__ == "__main__":
     unittest.main()

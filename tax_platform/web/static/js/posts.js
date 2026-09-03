@@ -20,6 +20,10 @@
     return levelSelect.value === "headquarters";
   }
 
+  function isHqCategory() {
+    return HQ_CATEGORIES.includes(categorySelect.value);
+  }
+
   function fillSelect(select, options, emptyLabel) {
     const prev = select.value;
     select.innerHTML =
@@ -66,7 +70,8 @@
   }
 
   function rebuildBureauOptions() {
-    if (isHeadquartersLevel()) {
+    // 内设/直属/派出 are STA-only; keep the district dropdown on STA units.
+    if (isHeadquartersLevel() || isHqCategory()) {
       fillSelect(
         bureauSelect,
         filteredStaUnits().map((u) => ({ value: u.code, label: u.name })),
@@ -74,9 +79,19 @@
       );
       return;
     }
+    let items = filteredBureaus();
+    const cat = categorySelect.value;
+    if (PROVINCE_CATEGORIES.includes(cat)) {
+      items = items.filter((site) => {
+        if (bureauCategory(site) === cat) return true;
+        if (!site.parent_code) return false;
+        const parent = allBureaus.find((b) => b.code === site.parent_code);
+        return parent ? bureauCategory(parent) === cat : false;
+      });
+    }
     fillSelect(
       bureauSelect,
-      filteredBureaus().map((site) => ({
+      items.map((site) => ({
         value: site.code,
         label: bureauDisplayName(site, allBureaus),
       })),
@@ -116,7 +131,7 @@
   async function onRegionFiltersChange() {
     const seq = ++regionSeq;
     rebuildCategoryOptions();
-    if (isHeadquartersLevel() && !staUnits.length) {
+    if ((isHeadquartersLevel() || isHqCategory()) && !staUnits.length) {
       await loadStaUnits();
     }
     if (seq !== regionSeq) return;
@@ -135,7 +150,7 @@
   }
 
   function resolveBureauCode() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       const unit = bureauSelect.value;
       if (unit) return "sta";
       return null;
@@ -146,7 +161,7 @@
   function currentSearchQuery() {
     const u = new URLSearchParams();
     if (levelSelect.value) u.set("org_level", levelSelect.value);
-    if (categorySelect.value) u.set("region_category", categorySelect.value);
+    if (categorySelect.value) u.set("unit_category", categorySelect.value);
     if (bureauSelect.value) u.set("bureau_code", bureauSelect.value);
     if (deptSelect.value) u.set("department", deptSelect.value);
     if (titleSelect.value) u.set("title", titleSelect.value);
@@ -170,13 +185,17 @@
     if (event?.type === "submit") offset = 0;
     const department = deptSelect.value.trim();
     const title = titleSelect.value.trim();
+    const hqMode = isHeadquartersLevel() || isHqCategory();
     const bureauCode = resolveBureauCode();
-    const orgLevel = isHeadquartersLevel() ? "headquarters" : levelSelect.value || undefined;
+    const orgLevel = hqMode
+      ? levelSelect.value || "headquarters"
+      : levelSelect.value || undefined;
+    const unitCategory = categorySelect.value || undefined;
 
-    if (!department && !title && !bureauCode) {
+    if (!department && !title && !bureauCode && !unitCategory) {
       statusEl.hidden = false;
       statusEl.className = "status error";
-      statusEl.textContent = "请至少选择科室、职务，或具体地区";
+      statusEl.textContent = "请至少选择科室、职务、地区分类，或具体地区";
       mountSimplePager(qs("#posts-pager"), { total: 0, offset: 0, limit, onPage: () => {} });
       return;
     }
@@ -190,6 +209,7 @@
         title: title || undefined,
         bureau_code: bureauCode || undefined,
         org_level: bureauCode ? undefined : orgLevel,
+        unit_category: unitCategory,
         limit,
         offset,
       });
@@ -314,7 +334,7 @@
       if (site) {
         if (!level) levelSelect.value = site.level || "";
         await onRegionFiltersChange();
-        const cat = params.get("region_category");
+        const cat = params.get("unit_category") || params.get("region_category");
         if (cat) {
           categorySelect.value = cat;
           rebuildBureauOptions();
@@ -329,7 +349,7 @@
       }
     } else {
       await onRegionFiltersChange();
-      const cat = params.get("region_category");
+      const cat = params.get("unit_category") || params.get("region_category");
       if (cat) {
         categorySelect.value = cat;
         rebuildBureauOptions();

@@ -12,7 +12,10 @@ from tax_platform.config.sites import get_site, list_sites
 from tax_platform.normalize.change import classify_change
 from tax_platform.normalize.department import clean_department_name
 from tax_platform.normalize.person import is_plausible_person_name
+from tax_platform.search.display import bureau_codes_for_category, infer_unit_category
 from tax_platform.store.identity import ensure_identity_for_person, ensure_identity_schema
+
+_HQ_UNIT_CATEGORIES = frozenset({"internal", "direct", "dispatched"})
 
 POSTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS org_posts (
@@ -330,6 +333,7 @@ def search_org_posts(
     title: str | None = None,
     bureau_code: str | None = None,
     org_level: str | None = None,
+    unit_category: str | None = None,
     limit: int = 50,
     offset: int = 0,
     conn: sqlite3.Connection,
@@ -339,9 +343,13 @@ def search_org_posts(
     dept_q = (clean_department_name(department) or (department or "").strip()) if department else ""
     title_q, title_level = _parse_title_query(title)
     bureau_q = (bureau_code or "").strip()
+    cat_q = (unit_category or "").strip()
     level_q = (org_level or "").strip() or (title_level or "")
+    hq_cat = cat_q in _HQ_UNIT_CATEGORIES
+    offset = max(0, int(offset or 0))
+    limit = int(limit or 0)
 
-    if not dept_q and not title_q and not bureau_q:
+    if not dept_q and not title_q and not bureau_q and not cat_q:
         raise ValueError("请至少填写科室、职务，或选择具体单位")
 
     where: list[str] = ["1=1"]
@@ -350,22 +358,28 @@ def search_org_posts(
     if bureau_q:
         where.append("p.bureau_code = ?")
         params.append(bureau_q)
-    elif level_q:
-        codes = [s.code for s in list_sites() if s.level == level_q]
-        if not codes:
-            return {
-                "total": 0,
-                "offset": offset,
-                "limit": limit,
-                "items": [],
-                "department": dept_q or None,
-                "title": title_q or None,
-                "bureau_code": bureau_q or None,
-                "org_level": level_q or None,
-            }
-        placeholders = ",".join("?" * len(codes))
-        where.append(f"p.bureau_code IN ({placeholders})")
-        params.extend(codes)
+    else:
+        codes = bureau_codes_for_category(
+            org_level=level_q or None, unit_category=cat_q or None
+        )
+        if codes is None and level_q:
+            codes = [s.code for s in list_sites() if s.level == level_q]
+        if codes is not None:
+            if not codes:
+                return {
+                    "total": 0,
+                    "offset": offset,
+                    "limit": limit,
+                    "items": [],
+                    "department": dept_q or None,
+                    "title": title_q or None,
+                    "bureau_code": bureau_q or None,
+                    "org_level": level_q or None,
+                    "unit_category": cat_q or None,
+                }
+            placeholders = ",".join("?" * len(codes))
+            where.append(f"p.bureau_code IN ({placeholders})")
+            params.extend(codes)
 
     if dept_q:
         # Stored keys look like 「武隆区 · 白马税务所」; clean_department_name strips
@@ -381,38 +395,8 @@ def search_org_posts(
         params.append(f"%{title_q}%")
 
     where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM org_posts p WHERE {where_sql}",
-        params,
-    ).fetchone()[0]
 
-    rows = conn.execute(
-        f"""
-        SELECT
-            p.id AS post_id,
-            p.bureau_code,
-            p.department,
-            p.title,
-            SUM(CASE WHEN t.is_current = 1 THEN 1 ELSE 0 END) AS incumbent_count,
-            SUM(CASE WHEN t.is_current = 0 THEN 1 ELSE 0 END) AS past_count,
-            GROUP_CONCAT(
-                CASE WHEN t.is_current = 1 THEN t.person_name END, '、'
-            ) AS incumbent_names,
-            GROUP_CONCAT(
-                CASE WHEN t.is_current = 0 THEN t.person_name END, '、'
-            ) AS past_names
-        FROM org_posts p
-        LEFT JOIN org_post_tenures t ON t.post_id = p.id
-        WHERE {where_sql}
-        GROUP BY p.id
-        ORDER BY past_count DESC, incumbent_count DESC, p.bureau_code, p.department, p.title
-        LIMIT ? OFFSET ?
-        """,
-        [*params, limit, offset],
-    ).fetchall()
-
-    items: list[dict[str, Any]] = []
-    for row in rows:
+    def _row_to_item(row: sqlite3.Row) -> dict[str, Any]:
         bureau = row["bureau_code"]
         try:
             site = get_site(bureau)
@@ -432,21 +416,69 @@ def search_org_posts(
                     break
             return seen
 
-        items.append(
-            {
-                "post_id": row["post_id"],
-                "bureau_code": bureau,
-                "bureau_name": bureau_name,
-                "org_level": level,
-                "region": region,
-                "department": row["department"],
-                "title": row["title"] or "",
-                "incumbent_count": int(row["incumbent_count"] or 0),
-                "past_count": int(row["past_count"] or 0),
-                "incumbents": _split_names(row["incumbent_names"]),
-                "past": _split_names(row["past_names"]),
-            }
+        return {
+            "post_id": row["post_id"],
+            "bureau_code": bureau,
+            "bureau_name": bureau_name,
+            "org_level": level,
+            "region": region,
+            "unit_category": infer_unit_category(
+                bureau,
+                {"department": row["department"], "title": row["title"] or ""},
+            ),
+            "department": row["department"],
+            "title": row["title"] or "",
+            "incumbent_count": int(row["incumbent_count"] or 0),
+            "past_count": int(row["past_count"] or 0),
+            "incumbents": _split_names(row["incumbent_names"]),
+            "past": _split_names(row["past_names"]),
+        }
+
+    select_sql = f"""
+        SELECT
+            p.id AS post_id,
+            p.bureau_code,
+            p.department,
+            p.title,
+            SUM(CASE WHEN t.is_current = 1 THEN 1 ELSE 0 END) AS incumbent_count,
+            SUM(CASE WHEN t.is_current = 0 THEN 1 ELSE 0 END) AS past_count,
+            GROUP_CONCAT(
+                CASE WHEN t.is_current = 1 THEN t.person_name END, '、'
+            ) AS incumbent_names,
+            GROUP_CONCAT(
+                CASE WHEN t.is_current = 0 THEN t.person_name END, '、'
+            ) AS past_names
+        FROM org_posts p
+        LEFT JOIN org_post_tenures t ON t.post_id = p.id
+        WHERE {where_sql}
+        GROUP BY p.id
+        ORDER BY past_count DESC, incumbent_count DESC, p.bureau_code, p.department, p.title
+    """
+
+    # 内设/直属/派出 are person/post text labels under bureau=sta — filter after classify.
+    if hq_cat:
+        matched: list[dict[str, Any]] = []
+        for row in conn.execute(select_sql, params):
+            item = _row_to_item(row)
+            if item.get("unit_category") != cat_q:
+                continue
+            matched.append(item)
+        total = len(matched)
+        page_limit = limit if limit > 0 else total
+        items = matched[offset : offset + page_limit] if page_limit else matched[offset:]
+    else:
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM org_posts p WHERE {where_sql}",
+                params,
+            ).fetchone()[0]
         )
+        page_limit = limit if limit > 0 else min(total, 2000)
+        rows = conn.execute(
+            select_sql + " LIMIT ? OFFSET ?",
+            [*params, page_limit, offset],
+        ).fetchall()
+        items = [_row_to_item(row) for row in rows]
 
     return {
         "total": total,
@@ -457,6 +489,7 @@ def search_org_posts(
         "title": title_q or None,
         "bureau_code": bureau_q or None,
         "org_level": level_q or None,
+        "unit_category": cat_q or None,
     }
 
 

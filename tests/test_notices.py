@@ -89,6 +89,54 @@ class NoticesFeedTests(unittest.TestCase):
         self.assertTrue({"shanghai", "beijing", "tianjin"} & codes)
         self.assertNotIn("hebei", codes)
 
+    def test_list_notices_hq_category_uses_event_text(self) -> None:
+        """直属/派出 must not share the same COUNT(*) of all STA notices."""
+        self.conn.execute(
+            """
+            INSERT INTO notices (bureau_code, title, source_url, issued_on)
+            VALUES
+              ('sta', '内设任免', 'https://example.com/sta-i', '2025-09-01'),
+              ('sta', '直属任免', 'https://example.com/sta-d', '2025-09-02'),
+              ('sta', '派出任免', 'https://example.com/sta-p', '2025-09-03')
+            """
+        )
+        rows = self.conn.execute(
+            "SELECT id, title FROM notices WHERE bureau_code='sta' ORDER BY id"
+        ).fetchall()
+        by_title = {r["title"]: r["id"] for r in rows}
+        self.conn.execute(
+            """
+            INSERT INTO appointment_events (
+                notice_id, bureau_code, person_name, action, department_raw, title_raw,
+                bureau_name, effective_on, notice_title, source_url, raw_clause
+            ) VALUES
+              (?, 'sta', '甲', 'appoint', '办公厅', '司长', '国家税务总局',
+               '2025-09-01', '内设任免', 'https://example.com/sta-i', '甲任办公厅司长'),
+              (?, 'sta', '乙', 'appoint', '中国税务出版社', '社长', '中国税务出版社',
+               '2025-09-02', '直属任免', 'https://example.com/sta-d', '乙任出版社社长'),
+              (?, 'sta', '丙', 'appoint', '驻广州特派员办事处', '特派员', '驻广州特派办',
+               '2025-09-03', '派出任免', 'https://example.com/sta-p', '丙任特派员')
+            """,
+            (
+                by_title["内设任免"],
+                by_title["直属任免"],
+                by_title["派出任免"],
+            ),
+        )
+        self.conn.commit()
+
+        direct = list_notices(unit_category="direct", limit=50, conn=self.conn)
+        self.assertEqual(direct["total"], 1)
+        self.assertEqual(direct["items"][0]["title"], "直属任免")
+
+        dispatched = list_notices(unit_category="dispatched", limit=50, conn=self.conn)
+        self.assertEqual(dispatched["total"], 1)
+        self.assertEqual(dispatched["items"][0]["title"], "派出任免")
+
+        internal = list_notices(unit_category="internal", limit=50, conn=self.conn)
+        self.assertEqual(internal["total"], 1)
+        self.assertEqual(internal["items"][0]["title"], "内设任免")
+
     def test_api_notices(self) -> None:
         r = self.client.get("/api/notices", params={"bureau_code": "shanghai", "limit": 10})
         self.assertEqual(r.status_code, 200)

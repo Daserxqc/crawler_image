@@ -26,8 +26,12 @@
     return levelSelect.value === "headquarters";
   }
 
+  function isHqCategory() {
+    return HQ_CATEGORIES.includes(categorySelect.value);
+  }
+
   function selectedBureauForWatch() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       const unit = bureauSelect.value;
       if (!unit) return null;
       return { code: "sta", label: "国家税务总局" };
@@ -64,7 +68,7 @@
   }
 
   function bureauParam() {
-    if (!isHeadquartersLevel()) return bureauSelect.value || undefined;
+    if (!(isHeadquartersLevel() || isHqCategory())) return bureauSelect.value || undefined;
     const unit = bureauSelect.value;
     return unit === "sta" ? "sta" : undefined;
   }
@@ -110,7 +114,8 @@
   }
 
   function rebuildBureauOptions() {
-    if (isHeadquartersLevel()) {
+    // 内设/直属/派出 are STA-only; keep the district dropdown on STA units.
+    if (isHeadquartersLevel() || isHqCategory()) {
       const items = filteredStaUnits();
       fillSelect(
         bureauSelect,
@@ -119,7 +124,16 @@
       );
       return;
     }
-    const items = filteredBureaus();
+    let items = filteredBureaus();
+    const cat = categorySelect.value;
+    if (PROVINCE_CATEGORIES.includes(cat)) {
+      items = items.filter((site) => {
+        if (bureauCategory(site) === cat) return true;
+        if (!site.parent_code) return false;
+        const parent = allBureaus.find((b) => b.code === site.parent_code);
+        return parent ? bureauCategory(parent) === cat : false;
+      });
+    }
     fillSelect(
       bureauSelect,
       items.map((site) => ({
@@ -157,7 +171,7 @@
   async function onRegionFiltersChange() {
     const seq = ++regionSeq;
     rebuildCategoryOptions();
-    if (isHeadquartersLevel() && !staUnits.length) {
+    if ((isHeadquartersLevel() || isHqCategory()) && !staUnits.length) {
       await loadStaUnits();
     }
     if (seq !== regionSeq) return;
@@ -165,9 +179,7 @@
     await refreshFilterOptions();
   }
 
-  function filterHitsByCategory(items) {
-    return items;
-  }
+  // filterHitsByCategory removed — category is applied server-side.
 
   async function loadLevels() {
     const data = await apiGet("/api/meta/levels");
@@ -302,14 +314,13 @@
   }
 
   function renderHits(items) {
-    const filtered = filterHitsByCategory(items);
-    if (!filtered.length) {
+    if (!items.length) {
       results.innerHTML =
         '<div class="results-empty" id="results-empty">没有匹配结果，请调整筛选条件后重试</div>';
       return;
     }
-    const currentHits = filtered.filter((h) => h.current?.is_current);
-    const otherHits = filtered.filter((h) => !h.current?.is_current);
+    const currentHits = items.filter((h) => h.current?.is_current);
+    const otherHits = items.filter((h) => !h.current?.is_current);
     let html = "";
     let idx = 0;
     const renderGroup = (hits, title) => {
@@ -344,11 +355,12 @@
   }
 
   function searchParams(page = currentPage) {
-    const unit = isHeadquartersLevel() ? bureauSelect.value : "";
+    const hqMode = isHeadquartersLevel() || isHqCategory();
+    const unit = hqMode ? bureauSelect.value : "";
     return {
-      org_level: levelSelect.value,
-      bureau_code: isHeadquartersLevel() ? (unit === "sta" ? "sta" : "") : bureauSelect.value,
-      unit: isHeadquartersLevel() && unit && unit !== "sta" ? unit : unit === "sta" ? "sta" : "",
+      org_level: hqMode && !levelSelect.value ? "headquarters" : levelSelect.value,
+      bureau_code: hqMode ? (unit === "sta" ? "sta" : "") : bureauSelect.value,
+      unit: hqMode && unit && unit !== "sta" ? unit : unit === "sta" ? "sta" : "",
       unit_category: categorySelect.value,
       department: deptSelect.value,
       title: parseTitleQuery(titleSelect.value),
@@ -458,18 +470,17 @@
       const data = await apiGet("/api/search", params);
       lastHits = data.items || [];
       searchTotal = data.total ?? 0;
-      const filtered = filterHitsByCategory(lastHits);
       const currentCount = Number(data.current_count ?? 0);
       const pageNum = Math.floor((data.offset ?? 0) / PAGE_SIZE) + 1;
-      meta.textContent = `共检索到 ${searchTotal} 位人员（第 ${pageNum} 页，本页 ${lastHits.length} 条${
-        categorySelect.value ? `，分类筛选后 ${filtered.length} 条` : ""
-      }）`;
+      meta.textContent = `共检索到 ${searchTotal} 位人员（第 ${pageNum} 页，本页 ${lastHits.length} 条）`;
       renderHits(lastHits);
       renderPagination(searchTotal, data.offset ?? 0);
-      if (!filtered.length) {
+      if (!lastHits.length) {
         status.hidden = false;
         status.className = "status";
-        status.textContent = "没有匹配结果";
+        status.textContent = searchTotal
+          ? "当前页没有结果，请翻页或调整筛选"
+          : "没有匹配结果";
       } else {
         meta.textContent += ` · 现任 ${currentCount} 人`;
       }

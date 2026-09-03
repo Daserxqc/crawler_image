@@ -10,6 +10,8 @@ from tax_platform.crawler.text_clean import normalize_doc_no, normalize_notice_t
 from tax_platform.search.display import bureau_codes_for_category, infer_unit_category
 from tax_platform.store.schema import connect
 
+_HQ_UNIT_CATEGORIES = frozenset({"internal", "direct", "dispatched"})
+
 
 def list_notices(
     *,
@@ -32,6 +34,9 @@ def list_notices(
     text_q = (q or "").strip()
     from_q = (date_from or "").strip()[:10]
     to_q = (date_to or "").strip()[:10]
+    hq_cat = cat_q in _HQ_UNIT_CATEGORIES
+    offset = max(0, int(offset or 0))
+    limit = int(limit or 0)
 
     where = ["1=1"]
     params: list[Any] = []
@@ -66,6 +71,94 @@ def list_notices(
 
     where_sql = " AND ".join(where)
 
+    def _notice_item(row: sqlite3.Row, *, unit_cat: str = "") -> dict[str, Any]:
+        bureau = row["bureau_code"]
+        try:
+            site = get_site(bureau)
+            level, region, bureau_name = site.level, site.region, site.name
+        except KeyError:
+            level, region, bureau_name = "unknown", None, bureau
+        return {
+            "id": row["id"],
+            "bureau_code": bureau,
+            "bureau_name": bureau_name,
+            "org_level": level,
+            "region": region,
+            "unit_category": unit_cat or infer_unit_category(bureau),
+            "title": normalize_notice_title(row["title"]) or row["title"],
+            "source_url": row["source_url"],
+            "published_at": row["published_at"],
+            "issued_on": row["issued_on"],
+            "doc_no": normalize_doc_no(row["doc_no"]),
+            "issuer": row["issuer"],
+            "event_count": int(row["event_count"] or 0),
+            "sort_date": (row["issued_on"] or (row["published_at"] or "")[:10] or None),
+        }
+
+    # HQ 内设/直属/派出：公告挂在 sta 下，必须看任免事件文本才能分类，不能只用 COUNT(bureau=sta)。
+    if hq_cat:
+        rows = db.execute(
+            f"""
+            SELECT
+                n.id,
+                n.bureau_code,
+                n.title,
+                n.source_url,
+                n.published_at,
+                n.issued_on,
+                n.doc_no,
+                n.issuer,
+                (
+                    SELECT COUNT(*) FROM appointment_events e WHERE e.notice_id = n.id
+                ) AS event_count
+            FROM notices n
+            WHERE {where_sql}
+            ORDER BY COALESCE(n.issued_on, substr(n.published_at, 1, 10), '') DESC,
+                     n.id DESC
+            """,
+            params,
+        ).fetchall()
+        matched: list[dict[str, Any]] = []
+        for row in rows:
+            events = db.execute(
+                """
+                SELECT department_raw, title_raw, bureau_name
+                FROM appointment_events
+                WHERE notice_id = ?
+                """,
+                (row["id"],),
+            ).fetchall()
+            hit_cat = ""
+            for ev in events:
+                hit_cat = infer_unit_category(
+                    row["bureau_code"],
+                    {
+                        "department": ev["department_raw"],
+                        "title": ev["title_raw"],
+                        "unit": ev["bureau_name"],
+                    },
+                )
+                if hit_cat == cat_q:
+                    break
+            else:
+                # No matching event — bare STA notice counts as internal only.
+                if not events:
+                    hit_cat = infer_unit_category(row["bureau_code"])
+                if hit_cat != cat_q:
+                    continue
+            matched.append(_notice_item(row, unit_cat=cat_q))
+        total = len(matched)
+        page_limit = limit if limit > 0 else total
+        items = matched[offset : offset + page_limit] if page_limit else matched[offset:]
+        if owns:
+            db.close()
+        return {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "items": items,
+        }
+
     total = db.execute(
         f"SELECT COUNT(*) FROM notices n WHERE {where_sql}",
         params,
@@ -82,9 +175,9 @@ def list_notices(
                 n.title,
                 n.source_url,
                 n.published_at,
+                n.issued_on,
                 n.doc_no,
-                n.issuer,
-                n.issued_on
+                n.issuer
             FROM notices n
             WHERE {where_sql}
             ORDER BY COALESCE(n.issued_on, substr(n.published_at, 1, 10), '') DESC,
@@ -93,10 +186,10 @@ def list_notices(
         )
         SELECT
             p.*,
-            COALESCE(c.cnt, 0) AS event_count
+            COALESCE(c.event_count, 0) AS event_count
         FROM page p
         LEFT JOIN (
-            SELECT notice_id, COUNT(*) AS cnt
+            SELECT notice_id, COUNT(*) AS event_count
             FROM appointment_events
             WHERE notice_id IN (SELECT id FROM page)
             GROUP BY notice_id
@@ -107,33 +200,7 @@ def list_notices(
         [*params, limit, offset],
     ).fetchall()
 
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        bureau = row["bureau_code"]
-        try:
-            site = get_site(bureau)
-            level, region, bureau_name = site.level, site.region, site.name
-        except KeyError:
-            level, region, bureau_name = "unknown", None, bureau
-
-        items.append(
-            {
-                "id": row["id"],
-                "bureau_code": bureau,
-                "bureau_name": bureau_name,
-                "org_level": level,
-                "region": region,
-                "unit_category": infer_unit_category(bureau),
-                "title": normalize_notice_title(row["title"]) or row["title"],
-                "source_url": row["source_url"],
-                "published_at": row["published_at"],
-                "issued_on": row["issued_on"],
-                "doc_no": normalize_doc_no(row["doc_no"]),
-                "issuer": row["issuer"],
-                "event_count": int(row["event_count"] or 0),
-                "sort_date": (row["issued_on"] or (row["published_at"] or "")[:10] or None),
-            }
-        )
+    items = [_notice_item(row) for row in rows]
 
     if owns:
         db.close()

@@ -119,6 +119,37 @@ class PostingSiteTests(unittest.TestCase):
         self.assertEqual(xiamen["unit_display"], "厦门市")
         self.assertNotEqual(xiamen.get("unit_category"), "internal")
 
+    def test_region_display_never_leaks_sta_code(self) -> None:
+        """Bare「稽查局」must still show 国家税务总局, not the raw bureau code「sta」."""
+        hit = enrich_hit_display(
+            {
+                "bureau_code": "sta",
+                "org_level": "headquarters",
+                "current": {
+                    "unit": "稽查局",
+                    "department": "本机关",
+                    "title": "副局长",
+                    "is_current": True,
+                },
+            }
+        )
+        self.assertEqual(hit["region_display"], "国家税务总局")
+        self.assertNotEqual(hit["region_display"], "sta")
+
+        full = enrich_hit_display(
+            {
+                "bureau_code": "sta",
+                "org_level": "headquarters",
+                "current": {
+                    "unit": "国家税务总局",
+                    "department": "征管和科技发展司",
+                    "title": "副司长",
+                    "is_current": True,
+                },
+            }
+        )
+        self.assertEqual(full["region_display"], "国家税务总局")
+
     def test_headquarters_org_bucket_puts_chief_first(self) -> None:
         from tax_platform.search.display import headquarters_org_bucket
 

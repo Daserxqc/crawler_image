@@ -25,6 +25,10 @@
     return levelSelect.value === "headquarters";
   }
 
+  function isHqCategory() {
+    return HQ_CATEGORIES.includes(categorySelect.value);
+  }
+
   function dateFromForRange() {
     const days = Number(rangeSelect.value);
     if (!Number.isFinite(days) || days <= 0) return undefined;
@@ -87,7 +91,7 @@
   }
 
   function rebuildBureauOptions() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       fillSelect(
         bureauSelect,
         filteredStaUnits().map((u) => ({ value: u.code, label: u.name })),
@@ -106,7 +110,7 @@
   }
 
   function resolveBureauCode() {
-    if (isHeadquartersLevel()) {
+    if (isHeadquartersLevel() || isHqCategory()) {
       return bureauSelect.value ? "sta" : null;
     }
     return bureauSelect.value || null;
@@ -175,9 +179,10 @@
 
     try {
       const data = await apiGet("/api/notices", {
-        org_level: isHeadquartersLevel()
-          ? "headquarters"
-          : levelSelect.value || undefined,
+        org_level:
+          isHeadquartersLevel() || isHqCategory()
+            ? levelSelect.value || "headquarters"
+            : levelSelect.value || undefined,
         bureau_code: resolveBureauCode() || undefined,
         unit_category: categorySelect.value || undefined,
         q: qInput.value.trim() || undefined,

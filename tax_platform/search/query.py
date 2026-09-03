@@ -16,6 +16,7 @@ from tax_platform.normalize.department import (
 from tax_platform.normalize.title import normalize_title, org_level_sort_rank, title_sort_rank
 from tax_platform.normalize.person import is_plausible_person_name
 from tax_platform.search.display import (
+    bureau_codes_for_category,
     enrich_hit_display,
     headquarters_org_bucket,
     headquarters_ranked_post,
@@ -80,6 +81,7 @@ def search_people_page(
     unit_category: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    require_role: str | None = None,
     limit: int = 50,
     offset: int = 0,
     conn: sqlite3.Connection | None = None,
@@ -88,12 +90,16 @@ def search_people_page(
 
     ``current_count`` is how many of *all* matches are marked 现任 in ``persons``,
     not just the current page.
+
+    ``require_role`` keeps only hits that recorded that role (e.g. ``appointee``
+    for 科室任职人员), applied before total/pagination.
     """
     title_q = (title or "").strip()
     dept_q = clean_department_name(department) or (department or "").strip()
     name_q = (name or "").strip()
     region_only = not title_q and not dept_q and not name_q
     cat_q = (unit_category or "").strip()
+    role_q = (require_role or "").strip() or None
     offset = max(0, int(offset or 0))
 
     owns = conn is None
@@ -130,20 +136,29 @@ def search_people_page(
         if role:
             item["roles"].add(role)
 
-    browse_level = org_level
-    if region_only and cat_q in {"internal", "direct", "dispatched"} and not browse_level:
-        browse_level = "headquarters"
-
     # Region browse: COUNT + LIMIT/OFFSET in SQL, enrich only the current page.
     if region_only:
+        level_q = (org_level or "").strip() or None
+        cat_codes = bureau_codes_for_category(
+            org_level=level_q, unit_category=cat_q or None
+        )
+
         allowed_bureaus: list[str] | None = None
-        if browse_level or bureau_code:
-            if browse_level:
-                allowed_bureaus = [s.code for s in list_sites(level=browse_level)]
+        if level_q:
+            allowed_bureaus = [s.code for s in list_sites(level=level_q)]
+        if cat_codes is not None:
+            cat_set = set(cat_codes)
+            if allowed_bureaus is None:
+                allowed_bureaus = list(cat_codes)
             else:
-                allowed_bureaus = [s.code for s in list_sites()]
-            if bureau_code:
-                allowed_bureaus = [b for b in allowed_bureaus if b == bureau_code] or [bureau_code]
+                allowed_bureaus = [b for b in allowed_bureaus if b in cat_set]
+        if bureau_code:
+            if allowed_bureaus is None:
+                allowed_bureaus = [bureau_code]
+            else:
+                # Strict intersection — do not fall back to the selected bureau when
+                # it conflicts with level/category (e.g. 直属 + 阿拉善盟 → empty).
+                allowed_bureaus = [b for b in allowed_bureaus if b == bureau_code]
 
         where = "1=1"
         args: list[Any] = []
@@ -155,6 +170,55 @@ def search_people_page(
             ph = ",".join("?" * len(allowed_bureaus))
             where += f" AND bureau_code IN ({ph})"
             args.extend(allowed_bureaus)
+
+        # 总局内设/直属/派出 (and specific STA units) need per-person classification;
+        # SQL COUNT of bureau_code=sta is the whole headquarters roster, not the category.
+        hq_cat = cat_q in {"internal", "direct", "dispatched"}
+        need_person_filter = hq_cat or bool((unit_code or "").strip())
+        if need_person_filter:
+            for row in db.execute(
+                f"SELECT bureau_code, name FROM persons WHERE {where} "
+                "ORDER BY bureau_code, name",
+                args,
+            ):
+                remember(row["bureau_code"], row["name"], "region_browse", "person")
+            results = []
+            for (bureau, person), meta in hits.items():
+                pid = person_id(bureau, person)
+                profile = get_person_profile(pid, conn=db)
+                appointments = _filter_appointments_by_date(
+                    _person_appointments(db, bureau, person), date_from, date_to
+                )
+                hit = enrich_hit_display(
+                    {
+                        "id": pid,
+                        "name": person,
+                        "bureau_code": bureau,
+                        "org_level": _level_of(bureau),
+                        "roles": sorted(meta["roles"]),
+                        "match_reasons": meta["match_reasons"],
+                        "supervised_departments": [],
+                        "current": profile.get("current") if profile else None,
+                        "appointments": appointments,
+                        "appointment_count": len(appointments),
+                        "profile": profile,
+                    }
+                )
+                results.append(hit)
+            results = _apply_unit_filters(
+                results,
+                unit_code=unit_code,
+                unit_category=cat_q if hq_cat else None,
+            )
+            total = len(results)
+            current_count = sum(
+                1 for r in results if (r.get("current") or {}).get("is_current")
+            )
+            page_limit = limit if limit > 0 else total
+            page = results[offset : offset + page_limit] if page_limit else results[offset:]
+            if owns:
+                db.close()
+            return total, current_count, page
 
         total = int(db.execute(f"SELECT COUNT(*) FROM persons WHERE {where}", args).fetchone()[0])
         current_count = int(
@@ -195,16 +259,8 @@ def search_people_page(
                     }
                 )
             )
-        if cat_q:
-            results = [r for r in results if r.get("unit_category") == cat_q]
-        if unit_code and unit_code not in {"", "sta"}:
-            results = [r for r in results if _hit_matches_unit(r, unit_code)]
-        elif unit_code == "sta":
-            results = [
-                r
-                for r in results
-                if r.get("bureau_code") == "sta" or _hit_matches_unit(r, unit_code)
-            ]
+        # Province/municipality/autonomous already narrowed via bureau_codes_for_category.
+        # Do not re-filter by unit_category — city/district rows have empty category.
         if owns:
             db.close()
         return total, current_count, results
@@ -269,6 +325,22 @@ def search_people_page(
         if name_q:
             event_sql += " AND person_name LIKE ?"
             event_args.append(f"%{name_q}%")
+        # Cheap SQL prefilter — full-table Python scan of ~40k events is too slow.
+        if dept_q and not title_q:
+            event_sql += (
+                " AND (IFNULL(department_raw,'') LIKE ? OR IFNULL(title_raw,'') LIKE ?)"
+            )
+            like = f"%{dept_q}%"
+            event_args.extend([like, like])
+        elif title_q and not dept_q:
+            event_sql += " AND IFNULL(title_raw,'') LIKE ?"
+            event_args.append(f"%{title_q}%")
+        elif title_q and dept_q:
+            event_sql += (
+                " AND (IFNULL(department_raw,'') LIKE ? OR IFNULL(title_raw,'') LIKE ?"
+                " OR IFNULL(title_raw,'') LIKE ?)"
+            )
+            event_args.extend([f"%{dept_q}%", f"%{dept_q}%", f"%{title_q}%"])
         for row in db.execute(event_sql, event_args):
             bureau = row["bureau_code"]
             if not _org_level_matches(
@@ -315,6 +387,11 @@ def search_people_page(
     if org_level:
         ranked_keys = [key for key in ranked_keys if _org_level_matches(key[0], org_level)]
 
+    if role_q:
+        ranked_keys = [
+            key for key in ranked_keys if role_q in (hits[key].get("roles") or set())
+        ]
+
     if date_from or date_to:
         ranked_keys = _filter_keys_by_appointment_dates(
             db, ranked_keys, hits, date_from, date_to
@@ -324,13 +401,10 @@ def search_people_page(
     current_count = _count_persons_is_current(db, ranked_keys)
     need_heavy_filter = bool((unit_code and unit_code not in {""}) or cat_q)
 
-    if limit > 0:
-        if need_heavy_filter:
-            # Over-fetch then filter unit/category; still cheaper than enriching everyone.
-            window = ranked_keys[offset : offset + max(limit * 25, limit)]
-        else:
-            window = ranked_keys[offset : offset + limit]
+    if limit > 0 and not need_heavy_filter:
+        window = ranked_keys[offset : offset + limit]
     else:
+        # Classify everyone before counting when unit/category filters apply.
         window = ranked_keys
 
     results: list[dict[str, Any]] = []
@@ -387,13 +461,15 @@ def search_people_page(
         )
 
     results.sort(key=_sort_key)
-    if unit_code and unit_code not in {"", "sta"}:
-        results = [r for r in results if _hit_matches_unit(r, unit_code)]
-    elif unit_code == "sta":
-        results = [r for r in results if r.get("bureau_code") == "sta" or _hit_matches_unit(r, unit_code)]
-    if cat_q:
-        results = [r for r in results if r.get("unit_category") == cat_q]
-    if limit > 0:
+    results = _apply_unit_filters(results, unit_code=unit_code, unit_category=cat_q)
+    if need_heavy_filter:
+        total = len(results)
+        current_count = sum(
+            1 for r in results if (r.get("current") or {}).get("is_current")
+        )
+        if limit > 0:
+            results = results[offset : offset + limit]
+    elif limit > 0:
         results = results[:limit]
     if owns:
         db.close()
@@ -555,10 +631,13 @@ def leaders_for_department(
     *,
     org_level: str | None = None,
     bureau_code: str | None = None,
-    limit: int = 50,
+    limit: int = 0,
     conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
-    """科室 → 分管领导（来自领导介绍 departments_json）。"""
+    """科室 → 分管领导（来自领导介绍 departments_json）。
+
+    ``limit`` ``0`` means return all matches (used by 科室穿透 so the count is real).
+    """
     dept_q = clean_department_name(department) or (department or "").strip()
     if not dept_q:
         raise ValueError("department is required")
@@ -651,6 +730,7 @@ def lookup_department(
     *,
     org_level: str | None = None,
     bureau_code: str | None = None,
+    unit_category: str | None = None,
     staff_limit: int = 30,
     staff_offset: int = 0,
     conn: sqlite3.Connection | None = None,
@@ -670,26 +750,36 @@ def lookup_department(
             dept_q,
             org_level=org_level,
             bureau_code=bureau_code,
+            limit=0,
             conn=db,
         )
+    # 任职人员列表只要 appointee；总数/分页也按该角色，避免先取 100 人再滤掉大半。
     total, _current, people = search_people_page(
         department=dept_q or None,
         org_level=org_level,
         bureau_code=bureau_code,
+        unit_category=unit_category,
+        require_role="appointee" if dept_q else None,
         limit=page_n,
         offset=staff_offset,
         conn=db,
     )
-    if dept_q:
-        staff = [p for p in people if "appointee" in (p.get("roles") or [])]
-        if not staff:
-            staff = people
-    else:
-        staff = people
+    if dept_q and total == 0 and staff_offset == 0:
+        total, _current, people = search_people_page(
+            department=dept_q,
+            org_level=org_level,
+            bureau_code=bureau_code,
+            unit_category=unit_category,
+            limit=page_n,
+            offset=0,
+            conn=db,
+        )
+    staff = people
     result = {
         "department": dept_q or "全部",
         "org_level": org_level,
         "bureau_code": bureau_code,
+        "unit_category": unit_category,
         "supervising_leaders": supervisors,
         "staff": staff,
         "supervisor_count": len(supervisors),
@@ -708,6 +798,7 @@ def penetrate_department(
     *,
     org_level: str | None = None,
     bureau_code: str | None = None,
+    unit_category: str | None = None,
     staff_limit: int = 20,
     staff_offset: int = 0,
     conn: sqlite3.Connection | None = None,
@@ -722,6 +813,7 @@ def penetrate_department(
         department,
         org_level=org_level,
         bureau_code=bureau_code,
+        unit_category=unit_category,
         staff_limit=limit,
         staff_offset=staff_offset,
         conn=db,
@@ -897,6 +989,29 @@ def _has_region_scope(
         or (unit_code or "").strip()
         or (unit_category or "").strip()
     )
+
+
+def _apply_unit_filters(
+    results: list[dict[str, Any]],
+    *,
+    unit_code: str | None,
+    unit_category: str | None = None,
+) -> list[dict[str, Any]]:
+    """Apply unit/category filters after hits are classified."""
+    out = results
+    code = (unit_code or "").strip()
+    if code and code != "sta":
+        out = [r for r in out if _hit_matches_unit(r, code)]
+    elif code == "sta":
+        out = [
+            r
+            for r in out
+            if r.get("bureau_code") == "sta" or _hit_matches_unit(r, code)
+        ]
+    cat = (unit_category or "").strip()
+    if cat:
+        out = [r for r in out if r.get("unit_category") == cat]
+    return out
 
 
 def _hit_matches_unit(hit: dict[str, Any], unit_code: str) -> bool:
