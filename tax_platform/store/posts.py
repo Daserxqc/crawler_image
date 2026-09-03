@@ -14,6 +14,10 @@ from tax_platform.normalize.department import clean_department_name
 from tax_platform.normalize.person import is_plausible_person_name
 from tax_platform.search.display import bureau_codes_for_category, infer_unit_category
 from tax_platform.store.identity import ensure_identity_for_person, ensure_identity_schema
+from tax_platform.store.integrity_clean import (
+    BUREAU_LEVEL_DEPT,
+    resolve_event_posting_bureau,
+)
 
 _HQ_UNIT_CATEGORIES = frozenset({"internal", "direct", "dispatched"})
 
@@ -90,14 +94,20 @@ def post_department_key(
     department_raw: str | None,
     bureau_name: str | None = None,
 ) -> str:
-    """Department key for a post, scoped to sub-bureau when clause names one."""
+    """Department key for a post, scoped to sub-bureau when clause names one.
+
+    Bureau-level appointments (empty department, unit equals the bureau itself)
+    land on ``本局`` so they are not dropped by rebuild.
+    """
     dept = _norm_dept(department_raw)
     unit = _post_unit_label(bureau_code, bureau_name)
     if unit and dept:
         return f"{unit} · {dept}"
     if unit:
         return unit
-    return dept
+    if dept:
+        return dept
+    return BUREAU_LEVEL_DEPT
 
 
 def _now() -> str:
@@ -163,10 +173,10 @@ def rebuild_org_posts(conn: sqlite3.Connection) -> dict[str, int]:
         name = row["person_name"]
         if not is_plausible_person_name(name):
             continue
-        bureau = row["bureau_code"]
+        bureau = resolve_event_posting_bureau(row["bureau_code"], row["bureau_name"])
         dept = post_department_key(bureau, row["department_raw"], row["bureau_name"])
         title = (row["title_raw"] or "").strip()
-        if not dept:
+        if not title and dept == BUREAU_LEVEL_DEPT:
             continue
         pid = post_id(bureau, dept, title)
         posts_meta[pid] = (bureau, dept, title)

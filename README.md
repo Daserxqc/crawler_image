@@ -207,6 +207,7 @@ python scripts/anomalies_hr.py list --limit 20   # 列出异常
 python scripts/anomalies_hr.py fix --type appointment_event --id 123 --set person_name=张三
 python scripts/anomalies_hr.py ignore --anomaly-id 42
 python scripts/anomalies_hr.py history           # 修正审计日志
+python scripts/audit_data_integrity.py           # 外键/脏码/近重复等完整性报告 → output/_data_integrity_audit.json
 ```
 
 常见检测项：人名可疑、职务/科室缺失、日期格式异常、科室字段解析噪声、同名跨多单位、同日任免冲突等。
@@ -219,6 +220,7 @@ python scripts/anomalies_hr.py history           # 修正审计日志
 python scripts/repair_appointment_events.py      # 补 bureau_name、去语义重复事件，重算身份/岗位/现任
 python scripts/repair_notice_duplicates.py       # 合并重复公告 URL、补解析零事件公告
 python scripts/reparse_appointments.py           # 从 notices.raw_text 重解析任免事件
+python scripts/clean_integrity_noise.py          # 清未注册局码、STA→任职局归并、去重并重建岗位
 ```
 
 ### 站点发现
