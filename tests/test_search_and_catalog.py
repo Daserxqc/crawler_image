@@ -53,6 +53,15 @@ class DepartmentNormalizeExtraTests(unittest.TestCase):
         self.assertFalse(is_plausible_person_name("朝阳区"))
         self.assertFalse(is_plausible_person_name("主要职责"))
         self.assertFalse(is_plausible_person_name("市局链接"))
+        # xxgk left-nav / role labels misread as person names
+        self.assertFalse(is_plausible_person_name("政策法规"))
+        self.assertFalse(is_plausible_person_name("政策解读"))
+        self.assertFalse(is_plausible_person_name("新闻宣传"))
+        self.assertFalse(is_plausible_person_name("权责清单"))
+        self.assertFalse(is_plausible_person_name("行政检查"))
+        self.assertFalse(is_plausible_person_name("政府采购"))
+        self.assertFalse(is_plausible_person_name("总经济师"))
+        self.assertFalse(is_plausible_person_name("总会计师"))
 
 
 class CatalogAndSearchTests(unittest.TestCase):

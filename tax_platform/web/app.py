@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from tax_platform.config.sites import list_sites
 from tax_platform.config.sta_units import list_sta_units, unit_keywords
 from tax_platform.search.changes import list_changes, post_archive
+from tax_platform.search.notices import list_notices
 from tax_platform.search.export import rows_from_profile, rows_from_search_hits, to_csv_bytes, to_xlsx_bytes
 from tax_platform.search.query import (
     departments_for_leader,
@@ -109,6 +110,11 @@ def ui_changes() -> FileResponse:
     return _html(STATIC_DIR / "changes.html")
 
 
+@app.get("/notices")
+def ui_notices() -> FileResponse:
+    return _html(STATIC_DIR / "notices.html")
+
+
 @app.get("/departments")
 def ui_departments() -> FileResponse:
     return _html(STATIC_DIR / "departments.html")
@@ -160,12 +166,20 @@ def meta_bureaus(
     """单位主数据（org_units）；库空或未同步时回退站点配置。"""
     from tax_platform.store.org_units import list_org_units, sync_org_units_from_sites
 
-    conn = connect(_db_path())
+    conn = connect(_db_path(), light=True)
     try:
-        sync_org_units_from_sites(conn, force=False)
-        if conn.execute("SELECT COUNT(*) FROM org_units").fetchone()[0] == 0:
-            sync_org_units_from_sites(conn, force=True)
-            conn.commit()
+        try:
+            empty = conn.execute("SELECT COUNT(*) FROM org_units").fetchone()[0] == 0
+        except Exception:
+            empty = True
+        if empty:
+            # Only sync when the table is missing/empty — not on every page load.
+            conn.close()
+            conn = connect(_db_path())
+            sync_org_units_from_sites(conn, force=False)
+            if conn.execute("SELECT COUNT(*) FROM org_units").fetchone()[0] == 0:
+                sync_org_units_from_sites(conn, force=True)
+                conn.commit()
         items = list_org_units(conn, level=level, parent_code=parent, region=region)
         if items:
             return {
@@ -202,6 +216,45 @@ def meta_bureaus(
         ],
         "source": "config",
     }
+
+
+@app.get("/api/meta/public-base")
+def meta_public_base(request: Request) -> dict[str, Any]:
+    """LAN / share base URL for invite links (not loopback).
+
+    Override with env ``TAX_HR_PUBLIC_BASE`` e.g. ``http://192.168.90.231:8000``.
+    """
+    import os
+    import socket
+
+    env = (os.environ.get("TAX_HR_PUBLIC_BASE") or "").strip().rstrip("/")
+    detected = ""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        if ip and not ip.startswith("127."):
+            port = request.url.port or 8000
+            detected = f"http://{ip}:{port}"
+    except OSError:
+        detected = ""
+    request_origin = str(request.base_url).rstrip("/")
+    # Prefer env, then non-loopback request host, then UDP-detected LAN IP.
+    host = (request.url.hostname or "").lower()
+    if env:
+        base = env
+        source = "env"
+    elif host and host not in {"127.0.0.1", "localhost"}:
+        base = request_origin
+        source = "request"
+    elif detected:
+        base = detected
+        source = "detected"
+    else:
+        base = request_origin
+        source = "fallback"
+    return {"base": base, "detected": detected, "source": source}
 
 
 @app.get("/api/meta/summary")
@@ -310,7 +363,7 @@ def api_search(
     """多维组合筛选；科室/职务/姓名留空时按地区浏览，全部留空则列出库内人员（分页）。"""
     conn = connect(_db_path())
     try:
-        total, hits = search_people_page(
+        total, current_count, hits = search_people_page(
             title=title,
             department=department,
             name=name,
@@ -328,7 +381,13 @@ def api_search(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         conn.close()
-    return {"total": total, "offset": offset, "limit": limit, "items": [_slim_hit(h) for h in hits]}
+    return {
+        "total": total,
+        "current_count": current_count,
+        "offset": offset,
+        "limit": limit,
+        "items": [_slim_hit(h) for h in hits],
+    }
 
 
 @app.get("/api/departments/lookup")
@@ -337,6 +396,7 @@ def api_department_lookup(
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
     staff_limit: int = Query(30, ge=0, le=200),
+    staff_offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """科室 → 分管领导 + 任职人员。科室可空=按地区浏览全体。"""
     conn = connect(_db_path())
@@ -346,6 +406,7 @@ def api_department_lookup(
             org_level=level,
             bureau_code=bureau,
             staff_limit=staff_limit,
+            staff_offset=staff_offset,
             conn=conn,
         )
     finally:
@@ -359,6 +420,8 @@ def api_department_penetrate(
     department: str | None = Query(None),
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
+    staff_limit: int = Query(100, ge=1, le=200),
+    staff_offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """层级穿透：科室 → 分管领导 → 单位层级。科室可空=按地区浏览全体。"""
     conn = connect(_db_path())
@@ -367,6 +430,8 @@ def api_department_penetrate(
             department or "",
             org_level=level,
             bureau_code=bureau,
+            staff_limit=staff_limit,
+            staff_offset=staff_offset,
             conn=conn,
         )
     finally:
@@ -508,6 +573,9 @@ def api_export_person(
 def api_changes(
     level: str | None = Query(None, alias="org_level"),
     bureau: str | None = Query(None, alias="bureau_code"),
+    unit_category: str | None = Query(
+        None, description="internal|direct|dispatched|municipality|province|autonomous"
+    ),
     change_type: str | None = Query(
         None,
         description="appoint|dismiss|transfer|promote|retire|probation_confirm|unknown",
@@ -525,9 +593,41 @@ def api_changes(
         return list_changes(
             org_level=level,
             bureau_code=bureau,
+            unit_category=unit_category,
             change_type=change_type,
             department=department,
             name=name,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            offset=offset,
+            conn=conn,
+        )
+    finally:
+        conn.close()
+
+
+@app.get("/api/notices")
+def api_notices(
+    level: str | None = Query(None, alias="org_level"),
+    bureau: str | None = Query(None, alias="bureau_code"),
+    unit_category: str | None = Query(
+        None, description="internal|direct|dispatched|municipality|province|autonomous"
+    ),
+    q: str | None = Query(None, description="标题 / 文号 / 发文机关关键词"),
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """最新人事任免公告（按任免日/发布日倒序）。"""
+    conn = connect(_db_path(), light=True)
+    try:
+        return list_notices(
+            org_level=level,
+            bureau_code=bureau,
+            unit_category=unit_category,
+            q=q,
             date_from=date_from,
             date_to=date_to,
             limit=limit,

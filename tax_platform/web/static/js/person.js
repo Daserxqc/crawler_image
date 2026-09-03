@@ -24,6 +24,21 @@
     window.location.href = "/";
   }
 
+  function tenureRange(row) {
+    const start = row.started_on || row.date || "";
+    const end = row.ended_on || "";
+    const ctype = row.change_type || row.action || "";
+    if (["dismiss", "retire", "免职", "退休"].includes(ctype) && !row.started_on) {
+      return row.date || "—";
+    }
+    if (!start) return "—";
+    if (end) return `${start} ～ ${end}`;
+    if (["appoint", "transfer", "promote", "probation_confirm", "任职", "调任", "晋升"].includes(ctype) || row.started_on) {
+      return `${start} ～ 至今`;
+    }
+    return start;
+  }
+
   function formatHistoryLine(row) {
     const bits = [
       changeLabel(row.change_type || row.action),
@@ -57,7 +72,7 @@
             : "";
           return `
             <li class="timeline-item">
-              <time class="timeline-date">${escapeHtml(row.date || "—")}</time>
+              <time class="timeline-date">${escapeHtml(tenureRange(row))}</time>
               <div class="timeline-body">
                 <div class="timeline-title">
                   <strong>${formatHistoryLine(row)}</strong>
@@ -73,6 +88,8 @@
         <div class="profile-toolbar">
           <button type="button" class="btn secondary" id="back-btn" aria-label="返回上一页">← 返回</button>
           <span id="person-watch-slot"></span>
+          <a class="btn secondary" id="export-csv" href="/api/export/people/${encodeURIComponent(profile.id || personId)}?fmt=csv">导出 CSV</a>
+          <a class="btn secondary" id="export-xlsx" href="/api/export/people/${encodeURIComponent(profile.id || personId)}?fmt=xlsx">导出 Excel</a>
         </div>
         <div class="profile-header">
           <div>

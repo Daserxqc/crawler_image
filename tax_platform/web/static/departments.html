@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -42,8 +42,13 @@
               <option value="">全部科室</option>
             </select>
           </div>
+          <div class="field">
+            <label for="leader_name">领导姓名（反查分管科室）</label>
+            <input id="leader_name" name="leader_name" type="search" placeholder="可选，填姓名后点反查" autocomplete="off" />
+          </div>
           <div class="filter-actions">
             <button class="btn" type="submit" id="dept-btn">查询</button>
+            <button class="btn secondary" type="button" id="leader-lookup-btn">反查分管</button>
             <button class="btn secondary" type="button" id="reset-btn">重置</button>
           </div>
         </form>
@@ -55,7 +60,7 @@
     </div>
   </main>
 
-  <script src="/static/js/common.js?v=22"></script>
-  <script src="/static/js/departments.js?v=8"></script>
+  <script src="/static/js/common.js?v=26"></script>
+  <script src="/static/js/departments.js?v=10"></script>
 </body>
 </html>

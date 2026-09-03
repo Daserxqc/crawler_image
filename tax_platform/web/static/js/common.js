@@ -138,6 +138,7 @@ const CHANGE_LABELS = {
 
 const PAGE_TABS = [
   { id: "search", href: "/", label: "人员查询" },
+  { id: "notices", href: "/notices", label: "最新公告" },
   { id: "changes", href: "/changes", label: "变动流" },
   { id: "departments", href: "/departments", label: "科室穿透" },
   { id: "posts", href: "/posts", label: "岗位历任" },
@@ -339,6 +340,7 @@ function mountAppHeader(activeId, authState) {
         <div class="user-menu-panel" id="user-menu-panel" role="menu" hidden>
           <a role="menuitem" href="/account">个人中心</a>
           <a role="menuitem" href="/account#watches">我的关注</a>
+          ${authState.user?.is_admin ? `<a role="menuitem" href="/admin/users">账号管理</a>` : ""}
           <button type="button" role="menuitem" id="logout-btn">退出登录</button>
         </div>
       </div>
@@ -591,6 +593,79 @@ async function mountWatchButton(container, spec) {
   return btn;
 }
 
+/**
+ * Shared prev/next/jump pager for list pages.
+ * @param {HTMLElement|null} container
+ * @param {{ total: number, offset: number, limit: number, onPage: (offset: number) => void, unitLabel?: string }} opts
+ */
+function mountSimplePager(container, opts) {
+  if (!container) return;
+  const total = Math.max(0, Number(opts.total) || 0);
+  const limit = Math.max(1, Number(opts.limit) || 50);
+  const offset = Math.max(0, Number(opts.offset) || 0);
+  const unitLabel = opts.unitLabel || "条";
+  const onPage = typeof opts.onPage === "function" ? opts.onPage : () => {};
+
+  if (total <= limit) {
+    container.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+
+  const page = Math.floor(offset / limit) + 1;
+  const pages = Math.max(1, Math.ceil(total / limit));
+  const prevDisabled = page <= 1;
+  const nextDisabled = page >= pages;
+  container.hidden = false;
+  container.innerHTML = `
+    <button class="btn secondary pager-btn" type="button" data-pager="first" ${
+      prevDisabled ? "disabled" : ""
+    }>首页</button>
+    <button class="btn secondary pager-btn" type="button" data-pager="prev" ${
+      prevDisabled ? "disabled" : ""
+    }>上一页</button>
+    <span class="pagination-info">第 ${page} / ${pages} 页（共 ${total} ${unitLabel}）</span>
+    <label class="pagination-jump">
+      <span class="sr-only">跳转到页码</span>
+      <input class="pager-input" type="number" min="1" max="${pages}" value="${page}" inputmode="numeric" aria-label="页码" data-pager="jump" />
+    </label>
+    <button class="btn secondary pager-btn" type="button" data-pager="go">跳转</button>
+    <button class="btn secondary pager-btn" type="button" data-pager="next" ${
+      nextDisabled ? "disabled" : ""
+    }>下一页</button>
+    <button class="btn secondary pager-btn" type="button" data-pager="last" ${
+      nextDisabled ? "disabled" : ""
+    }>尾页</button>
+  `;
+
+  const goTo = (targetPage) => {
+    const p = Math.min(pages, Math.max(1, Number(targetPage) || 1));
+    onPage((p - 1) * limit);
+  };
+
+  container.querySelector('[data-pager="first"]')?.addEventListener("click", () => {
+    if (!prevDisabled) goTo(1);
+  });
+  container.querySelector('[data-pager="prev"]')?.addEventListener("click", () => {
+    if (!prevDisabled) goTo(page - 1);
+  });
+  container.querySelector('[data-pager="next"]')?.addEventListener("click", () => {
+    if (!nextDisabled) goTo(page + 1);
+  });
+  container.querySelector('[data-pager="last"]')?.addEventListener("click", () => {
+    if (!nextDisabled) goTo(pages);
+  });
+  const jumpInput = container.querySelector('[data-pager="jump"]');
+  const handleJump = () => goTo(jumpInput?.value);
+  container.querySelector('[data-pager="go"]')?.addEventListener("click", handleJump);
+  jumpInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      handleJump();
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   if (!page) return;
@@ -599,3 +674,30 @@ document.addEventListener("DOMContentLoaded", () => {
     .then((me) => mountAppHeader(page, me))
     .catch(() => mountAppHeader(page, { authenticated: false }));
 });
+
+// Focus often stays on top filter <select>s; End/Home then change the option
+// (and may reload) instead of scrolling. Prefer page scroll unless typing.
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key !== "End" && event.key !== "Home") return;
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const tag = target.tagName;
+    if (tag === "TEXTAREA" || target.isContentEditable) return;
+    if (tag === "INPUT") {
+      const type = String(target.getAttribute("type") || "text").toLowerCase();
+      if (!["button", "submit", "reset", "checkbox", "radio", "file", "hidden"].includes(type)) {
+        return; // caret move in text/search/number fields
+      }
+    }
+    event.preventDefault();
+    const top = event.key === "Home" ? 0 : Math.max(
+      document.documentElement.scrollHeight,
+      document.body.scrollHeight
+    );
+    window.scrollTo({ top, left: 0, behavior: "smooth" });
+  },
+  true
+);

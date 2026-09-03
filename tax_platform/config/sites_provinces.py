@@ -54,7 +54,7 @@ PROVINCE_URL_OVERRIDES: dict[str, dict[str, str]] = {
     "jilin": {
         "home_url": "https://jilin.chinatax.gov.cn/",
         "leader_intro_url": "https://jilin.chinatax.gov.cn/col/col24472/index.html",
-        "appointment_list_url": "https://jilin.chinatax.gov.cn/col/col8211/index.html"
+        "appointment_list_url": "http://jilin.chinatax.gov.cn/col/col8211/index.html"
     },
     "jiangxi": {
         "home_url": "https://jiangxi.chinatax.gov.cn/",
@@ -136,7 +136,8 @@ PROVINCE_URL_OVERRIDES: dict[str, dict[str, str]] = {
     },
     "henan": {
         "home_url": "https://henan.chinatax.gov.cn/",
-        "leader_intro_url": "https://henan.chinatax.gov.cn/xxgk/ldjj/"
+        "leader_intro_url": "https://henan.chinatax.gov.cn/xxgk/ldjj/",
+        "appointment_list_url": "https://henan.chinatax.gov.cn/xxgk/rsgl/rsrm/",
     },
     "guangxi": {
         "home_url": "https://guangxi.chinatax.gov.cn/",
@@ -180,12 +181,12 @@ PROVINCE_URL_OVERRIDES: dict[str, dict[str, str]] = {
     "heilongjiang": {
         "home_url": "https://heilongjiang.chinatax.gov.cn/",
         "leader_intro_url": "https://heilongjiang.chinatax.gov.cn/col/col11194/index.html",
-        "appointment_list_url": "https://heilongjiang.chinatax.gov.cn/col/col11190/index.html"
+        "appointment_list_url": "http://heilongjiang.chinatax.gov.cn/col/col17418/index.html"
     },
     "shanxi": {
         "home_url": "https://shanxi.chinatax.gov.cn/",
         "leader_intro_url": "https://shanxi.chinatax.gov.cn/xxgk/leader/sx-11400",
-        "appointment_list_url": "https://shanxi.chinatax.gov.cn/web/list/sx-11400-4187"
+        "appointment_list_url": "http://shanxi.chinatax.gov.cn/son/list/sx-11400-4187"
     },
     "qinghai": {
         "home_url": "http://qinghai.chinatax.gov.cn/",

@@ -13,6 +13,8 @@
   let allBureaus = [];
   let staUnits = [];
   let regionSeq = 0;
+  let offset = 0;
+  const limit = 50;
 
   function isHeadquartersLevel() {
     return levelSelect.value === "headquarters";
@@ -141,17 +143,31 @@
     return bureauSelect.value || null;
   }
 
+  function currentSearchQuery() {
+    const u = new URLSearchParams();
+    if (levelSelect.value) u.set("org_level", levelSelect.value);
+    if (categorySelect.value) u.set("region_category", categorySelect.value);
+    if (bureauSelect.value) u.set("bureau_code", bureauSelect.value);
+    if (deptSelect.value) u.set("department", deptSelect.value);
+    if (titleSelect.value) u.set("title", titleSelect.value);
+    if (offset > 0) u.set("offset", String(offset));
+    return u.toString();
+  }
+
   function archiveHref(bureauCode, department, title) {
     const url = new URL("/posts/view", window.location.origin);
     url.searchParams.set("bureau_code", bureauCode);
     url.searchParams.set("department", department);
     if (title) url.searchParams.set("title", title);
+    const ret = currentSearchQuery();
+    if (ret) url.searchParams.set("ret", ret);
     return `${url.pathname}${url.search}`;
   }
 
   async function searchPosts(event) {
     event?.preventDefault();
     statusEl.hidden = true;
+    if (event?.type === "submit") offset = 0;
     const department = deptSelect.value.trim();
     const title = titleSelect.value.trim();
     const bureauCode = resolveBureauCode();
@@ -161,6 +177,7 @@
       statusEl.hidden = false;
       statusEl.className = "status error";
       statusEl.textContent = "请至少选择科室、职务，或具体地区";
+      mountSimplePager(qs("#posts-pager"), { total: 0, offset: 0, limit, onPage: () => {} });
       return;
     }
 
@@ -173,17 +190,23 @@
         title: title || undefined,
         bureau_code: bureauCode || undefined,
         org_level: bureauCode ? undefined : orgLevel,
-        limit: 50,
+        limit,
+        offset,
       });
       const items = data.items || [];
-      metaEl.textContent = `共 ${data.total ?? 0} 个岗位${items.length < (data.total || 0) ? `（本页 ${items.length}）` : ""}`;
+      const total = data.total ?? 0;
+      metaEl.textContent = `共 ${total} 个岗位${
+        items.length < total ? `（本页 ${items.length}）` : ""
+      }`;
 
       if (!items.length) {
         listEl.innerHTML = `<div class="results-empty">未找到岗位，请放宽科室/职务条件</div>`;
+        mountSimplePager(qs("#posts-pager"), { total: 0, offset: 0, limit, onPage: () => {} });
         return;
       }
 
-      if (items.length === 1) {
+      // Only auto-open when the whole result set is a single post.
+      if (total === 1 && items.length === 1 && offset === 0) {
         const only = items[0];
         window.location.href = archiveHref(only.bureau_code, only.department, only.title || title);
         return;
@@ -220,6 +243,17 @@
           </div>`;
         })
         .join("");
+
+      mountSimplePager(qs("#posts-pager"), {
+        total,
+        offset,
+        limit,
+        unitLabel: "个岗位",
+        onPage: (nextOffset) => {
+          offset = nextOffset;
+          searchPosts().catch(() => {});
+        },
+      });
     } catch (err) {
       listEl.innerHTML = "";
       statusEl.hidden = false;
@@ -230,6 +264,7 @@
           ? "接口未找到：请重启 API 服务后再试（python scripts/run_api.py）"
           : msg;
       metaEl.textContent = "检索失败";
+      mountSimplePager(qs("#posts-pager"), { total: 0, offset: 0, limit, onPage: () => {} });
     } finally {
       qs("#posts-btn").disabled = false;
     }
@@ -237,11 +272,13 @@
 
   function resetForm() {
     form.reset();
+    offset = 0;
     onRegionFiltersChange()
       .then(() => {
         listEl.innerHTML = "";
         metaEl.textContent = "选择科室、职务或具体地区后检索。";
         statusEl.hidden = true;
+        mountSimplePager(qs("#posts-pager"), { total: 0, offset: 0, limit, onPage: () => {} });
         const url = new URL(window.location.href);
         url.search = "";
         window.history.replaceState({}, "", url);
@@ -269,12 +306,19 @@
   }
 
   async function applyUrlParams() {
+    const level = params.get("org_level");
+    if (level) levelSelect.value = level;
     const code = params.get("bureau_code");
     if (code) {
       const site = allBureaus.find((b) => b.code === code);
       if (site) {
-        levelSelect.value = site.level || "";
+        if (!level) levelSelect.value = site.level || "";
         await onRegionFiltersChange();
+        const cat = params.get("region_category");
+        if (cat) {
+          categorySelect.value = cat;
+          rebuildBureauOptions();
+        }
         bureauSelect.value = code;
       } else if (code === "sta") {
         levelSelect.value = "headquarters";
@@ -285,6 +329,11 @@
       }
     } else {
       await onRegionFiltersChange();
+      const cat = params.get("region_category");
+      if (cat) {
+        categorySelect.value = cat;
+        rebuildBureauOptions();
+      }
     }
     if (params.get("department")) {
       const dept = params.get("department");
@@ -306,6 +355,8 @@
       }
       titleSelect.value = title;
     }
+    const off = Number(params.get("offset") || "0");
+    if (Number.isFinite(off) && off > 0) offset = off;
   }
 
   form.addEventListener("submit", (e) => searchPosts(e).catch(() => {}));

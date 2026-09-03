@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/app.css?v=35" />
+  <link rel="stylesheet" href="/static/css/app.css?v=36" />
 </head>
 <body class="app" data-page="account">
   <header class="app-header" id="app-header"></header>
@@ -30,6 +30,7 @@
             <button type="button" class="account-nav-item" data-section="watches">我的关注 <span class="account-nav-badge" id="nav-badge-watches" hidden></span></button>
             <button type="button" class="account-nav-item" data-section="notify">变动通知 <span class="account-nav-badge" id="nav-badge-notify" hidden></span></button>
             <button type="button" class="account-nav-item" data-section="settings">账号设置</button>
+            <a class="account-nav-item account-nav-link" id="nav-admin-users" href="/admin/users" hidden>账号管理</a>
             <button type="button" class="account-nav-item" data-section="help">使用帮助</button>
           </nav>
         </aside>
@@ -114,7 +115,7 @@
           <section class="account-section panel-card" id="section-settings">
             <header class="account-section-head">
               <h2 class="account-section-title">账号设置</h2>
-              <p class="account-section-lead">修改昵称、查看登录信息。</p>
+              <p class="account-section-lead">修改昵称与密码、查看登录信息。</p>
             </header>
             <div class="account-profile-card">
               <h3 class="watch-subheading">修改昵称</h3>
@@ -123,6 +124,26 @@
                 <div class="field"><label for="nickname-input">昵称</label><input id="nickname-input" type="text" maxlength="16" placeholder="如：税务小李" /></div>
                 <button type="submit" class="btn login-primary" id="nickname-save-btn">保存昵称</button>
                 <p class="login-status" id="nickname-status" role="status"></p>
+              </form>
+            </div>
+            <div class="account-profile-card">
+              <h3 class="watch-subheading">修改密码</h3>
+              <p class="muted">修改后请使用新密码登录；管理员无法查看您的新密码。</p>
+              <form id="password-form" class="account-nickname-form" autocomplete="off">
+                <div class="field">
+                  <label for="password-old">当前密码</label>
+                  <input id="password-old" name="old_password" type="password" autocomplete="current-password" required />
+                </div>
+                <div class="field">
+                  <label for="password-new">新密码</label>
+                  <input id="password-new" name="new_password" type="password" autocomplete="new-password" required minlength="6" />
+                </div>
+                <div class="field">
+                  <label for="password-new2">确认新密码</label>
+                  <input id="password-new2" name="new_password2" type="password" autocomplete="new-password" required minlength="6" />
+                </div>
+                <button type="submit" class="btn login-primary" id="password-save-btn">保存新密码</button>
+                <p class="login-status" id="password-status" role="status"></p>
               </form>
             </div>
             <div class="account-profile-card">
@@ -174,7 +195,8 @@
               <section class="account-help-block">
                 <h3 class="watch-subheading">账号与昵称</h3>
                 <ul class="account-help-list compact">
-                  <li>本站使用手机号或邮箱验证码登录，无需记密码。</li>
+                  <li>本站为邀请制：管理员发放账号后，使用用户名与密码登录。</li>
+                  <li>可在登录页或个人中心修改密码与昵称。</li>
                   <li>未设置昵称时，系统自动称呼您为「用户xxxx」或「税务用户xxxx」。</li>
                   <li>在「账号设置」可修改昵称；留空保存则恢复系统默认。</li>
                   <li>换绑手机号或邮箱需退出后重新验证；原账号的关注记录不会迁移。</li>
@@ -196,6 +218,6 @@
     </div>
   </main>
   <script src="/static/js/common.js?v=22"></script>
-  <script src="/static/js/account.js?v=7"></script>
+  <script src="/static/js/account.js?v=10"></script>
 </body>
 </html>

@@ -324,15 +324,22 @@
 
   async function loadBureauMeta() {
     const levelSelect = qs("#qa-bureau-level");
-    const levels = await apiGet("/api/meta/levels");
-    (levels.levels || []).forEach((level) => {
-      const opt = document.createElement("option");
-      opt.value = level.id;
-      opt.textContent = level.label;
-      levelSelect.appendChild(opt);
-    });
-    allBureaus = (await apiGet("/api/meta/bureaus")).items || [];
-    rebuildBureauOptions();
+    if (!levelSelect) return;
+    try {
+      const levels = await apiGet("/api/meta/levels");
+      (levels.levels || []).forEach((level) => {
+        if ([...levelSelect.options].some((o) => o.value === level.id)) return;
+        const opt = document.createElement("option");
+        opt.value = level.id;
+        opt.textContent = level.label;
+        levelSelect.appendChild(opt);
+      });
+      allBureaus = (await apiGet("/api/meta/bureaus")).items || [];
+      rebuildBureauOptions();
+    } catch (err) {
+      console.warn("loadBureauMeta failed", err);
+      setQuickStatus(err.message || "单位列表加载失败", "error");
+    }
   }
 
   function renderProfile(user) {
@@ -350,13 +357,18 @@
     const nickLabel = customNick ? customNick : `${defaultNick || displayName}（系统默认）`;
     setText("#setting-nickname", nickLabel);
     setText("#setting-account", masked);
-    setText("#setting-method", `${method}验证码`);
+    setText("#setting-method", method || "账号密码");
     setText("#setting-created", formatLocalDate(user.created_at));
     setText("#setting-last-login", formatLocalDateTime(user.last_login_at));
     setText(
       "#setting-session",
       user.session_expires_at ? formatLocalDateTime(user.session_expires_at) : "—"
     );
+
+    const adminNav = qs("#nav-admin-users");
+    if (adminNav) {
+      adminNav.hidden = !user.is_admin;
+    }
 
     const nickInput = qs("#nickname-input");
     const nickHint = qs("#nickname-hint");
@@ -375,12 +387,24 @@
       return;
     }
     currentUser = me.user || {};
+    if (currentUser.must_change_password) {
+      window.location.href = `/login?next=${encodeURIComponent("/account")}`;
+      return;
+    }
     renderProfile(currentUser);
-    await loadBureauMeta();
-    setQuickAddMode("person");
-    await reloadData();
+    // Overview first — don't block timeline on bureau catalog fetch.
+    try {
+      await reloadData();
+    } catch (err) {
+      const timeline = qs("#account-timeline");
+      if (timeline) {
+        timeline.innerHTML = `<div class="status error">${escapeHtml(err.message || err)}</div>`;
+      }
+    }
     showSection(getSectionFromHash(), { updateHash: false });
     bindGotoButtons();
+    setQuickAddMode("person");
+    loadBureauMeta().catch(() => {});
   }
 
   qsa(".account-nav-item").forEach((btn) => {
@@ -547,6 +571,45 @@
       renderProfile(currentUser);
       await fetchAuthState(true);
       status.textContent = nickname ? "昵称已保存" : "已恢复系统默认昵称";
+      status.className = "login-status ok";
+    } catch (err) {
+      status.textContent = err.message || String(err);
+      status.className = "login-status error";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  qs("#password-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const status = qs("#password-status");
+    const btn = qs("#password-save-btn");
+    const oldPassword = qs("#password-old").value;
+    const newPassword = qs("#password-new").value;
+    const newPassword2 = qs("#password-new2").value;
+    status.textContent = "";
+    status.className = "login-status";
+    if (newPassword.length < 6) {
+      status.textContent = "新密码至少 6 位。";
+      status.className = "login-status error";
+      return;
+    }
+    if (newPassword !== newPassword2) {
+      status.textContent = "两次输入的新密码不一致。";
+      status.className = "login-status error";
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const data = await apiPost("/api/auth/change-password", {
+        old_password: oldPassword,
+        new_password: newPassword,
+      });
+      currentUser = data.user || currentUser;
+      renderProfile(currentUser);
+      await fetchAuthState(true);
+      qs("#password-form").reset();
+      status.textContent = "密码已更新。";
       status.className = "login-status ok";
     } catch (err) {
       status.textContent = err.message || String(err);

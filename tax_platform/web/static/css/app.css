@@ -456,6 +456,15 @@ a.app-auth-btn {
   font-weight: 700;
 }
 
+a.account-nav-link {
+  text-decoration: none;
+  color: inherit;
+}
+
+a.account-nav-link[hidden] {
+  display: none !important;
+}
+
 .account-nav-badge {
   min-width: 1.35rem;
   padding: 0.05rem 0.35rem;
@@ -2235,6 +2244,25 @@ a.app-auth-btn {
   border-bottom: 1px solid var(--line);
 }
 
+.post-tenure-list {
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 0;
+}
+
+.post-tenure-row {
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.post-tenure-main {
+  margin-bottom: 0.25rem;
+}
+
+.post-tenure-meta {
+  font-size: 0.92rem;
+}
+
 .timeline-date {
   font-variant-numeric: tabular-nums;
   color: var(--ink-muted);
@@ -2308,6 +2336,34 @@ a.app-auth-btn {
 
 .post-row-action .btn {
   white-space: nowrap;
+}
+
+.notice-row {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 0.75rem 1rem;
+  padding: 0.95rem 1rem;
+  background: var(--paper-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 0.5rem;
+  font-size: 0.95rem;
+}
+
+.notice-row-date {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+.notice-row-main strong {
+  display: block;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.notice-row-main .muted {
+  margin-top: 0.25rem;
 }
 
 .post-view-back {
@@ -2441,6 +2497,7 @@ a.app-auth-btn {
   .person-meta-row,
   .change-row,
   .post-row,
+  .notice-row,
   .timeline li,
   .appointment-mini li {
     grid-template-columns: 1fr;
@@ -2510,4 +2567,67 @@ a.app-auth-btn {
     width: 100%;
     justify-self: stretch;
   }
+}
+
+.field-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1rem;
+  font-size: 0.92rem;
+  color: var(--muted, #5c6570);
+}
+
+.login-subtitle {
+  margin: 0 0 0.75rem;
+  font-size: 1.15rem;
+}
+
+.invite-value {
+  margin: 0.25rem 0 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.invite-result {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--border, #d8dee6);
+  border-radius: 8px;
+  background: var(--surface-2, #f6f8fa);
+}
+
+.invite-link-input {
+  width: 100%;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.data-table th,
+.data-table td {
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid var(--border, #e5e9ef);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.data-table .table-actions {
+  white-space: nowrap;
+}
+
+.link-btn.danger {
+  color: #b42318;
+}
+
+.form-grid {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 32rem;
 }

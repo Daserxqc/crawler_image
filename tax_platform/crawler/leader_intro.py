@@ -96,6 +96,12 @@ SKIP_LINK_TEXT = (
     "政策文件",
     "纳税服务",
     "互动交流",
+    "政策法规",
+    "政策解读",
+    "新闻宣传",
+    "权责清单",
+    "行政检查",
+    "政府采购",
 )
 SKIP_PSEUDO_NAMES = (
     "抖音",
@@ -138,6 +144,26 @@ SKIP_PSEUDO_NAMES = (
     "新浪微博",
     "新闻发布",
     "查看更多",
+    "政策法规",
+    "政策解读",
+    "新闻宣传",
+    "权责清单",
+    "行政检查",
+    "政府采购",
+    "二维码",
+    "我要申请",
+    "申请须知",
+    "中标公告",
+    "招标公告",
+    "文件解读",
+    "预算决算",
+    "最新文件",
+    "采购意向",
+    "执法公示",
+    "网站建议",
+    "总经济师",
+    "总会计师",
+    "总审计师",
     "派出机构",
     "直属单位",
     "直属机构",
@@ -363,16 +389,14 @@ def _person_name_links_in(
             continue
         if not is_plausible_person_name(name):
             continue
-        # Require leader-ish href (column / article / ldjj) OR site-relative path.
-        if not (
-            LEADER_COL_HREF_RE.search(href)
-            or ARTICLE_HREF_RE.search(href)
+        # Reject bare /col/colN and site-relative chrome (政策法规等)；
+        # keep article / ldjj paths, or names already backed by a bio line.
+        leaderish_href = bool(
+            ARTICLE_HREF_RE.search(href)
             or re.search(r"/(?:ldjj|ldzl|ldjs|ldxx|leaderlist|010002)/", href, re.I)
             or re.search(r"/ld_[a-z]+\.s?html", href, re.I)
-            or href.startswith("./")
-            or href.startswith("../")
-            or href.startswith("/")
-        ):
+        )
+        if not leaderish_href and name not in bios:
             continue
         seen.add(name)
         person_url = resolve_list_child_url(source_url, href)

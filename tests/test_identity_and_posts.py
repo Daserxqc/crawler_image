@@ -123,6 +123,75 @@ class IdentityAndPostsTests(unittest.TestCase):
         self.assertIn("王红岩", past)
         self.assertNotIn("王红岩", incumbents)
 
+    def test_batch_district_chiefs_not_one_post(self) -> None:
+        """市局一篇任免任命多个区县局长时，不能合成同一岗位。"""
+        nid = self.conn.execute("SELECT id FROM notices").fetchone()[0]
+        self.conn.execute(
+            """
+            INSERT INTO appointment_events (
+                notice_id, bureau_code, person_name, action, bureau_name,
+                department_raw, title_raw, effective_on, notice_title, source_url, raw_clause
+            ) VALUES
+            (?, 'city', '刘勇', 'appoint', '国家税务总局某市临河区税务局',
+             '党委书记', '局长、四级高级主办', '2021-12-02', '任免', 'https://example.com/a',
+             '刘勇为临河区税务局党委书记、局长'),
+            (?, 'city', '王磊', 'appoint', '国家税务总局某市乌拉特后旗税务局',
+             '党委书记', '局长、四级高级主办', '2021-12-02', '任免', 'https://example.com/a',
+             '王磊为乌拉特后旗税务局党委书记、局长'),
+            (?, 'city', '刘刚', 'appoint', '国家税务总局某市经济技术开发区税务局',
+             '党委书记', '局长、四级高级主办', '2021-12-02', '任免', 'https://example.com/a',
+             '刘刚为经济技术开发区税务局党委书记、局长')
+            """,
+            (nid, nid, nid),
+        )
+        self.conn.commit()
+        rebuild_org_posts(self.conn)
+        self.conn.commit()
+
+        for unit, person in (
+            ("临河区 · 党委书记", "刘勇"),
+            ("乌拉特后旗 · 党委书记", "王磊"),
+            ("经济技术开发区 · 党委书记", "刘刚"),
+        ):
+            archive = post_archive(
+                bureau_code="city",
+                department=unit,
+                title="局长、四级高级主办",
+                conn=self.conn,
+            )
+            incumbents = {i["person_name"] for i in archive["incumbents"]}
+            past = {i["person_name"] for i in archive["past"]}
+            self.assertEqual(incumbents, {person}, unit)
+            self.assertEqual(past, set(), unit)
+
+    def test_deputy_same_day_multiple_incumbents(self) -> None:
+        """同日任命多名副所长，应并存现任，不应产生假历任。"""
+        nid = self.conn.execute("SELECT id FROM notices").fetchone()[0]
+        names = ["王甲", "王乙", "王丙"]
+        for nm in names:
+            self.conn.execute(
+                """
+                INSERT INTO appointment_events (
+                    notice_id, bureau_code, person_name, action,
+                    department_raw, title_raw, effective_on, notice_title,
+                    source_url, raw_clause
+                ) VALUES (?, 'qx', ?, 'appoint', '南城税务所', '副所长',
+                          '2021-07-30', '任免', 'https://example.com/a', ?)
+                """,
+                (nid, nm, f"{nm}任副所长"),
+            )
+        self.conn.commit()
+        rebuild_org_posts(self.conn)
+        archive = post_archive(
+            bureau_code="qx",
+            department="南城税务所",
+            title="副所长",
+            conn=self.conn,
+        )
+        incumbents = {i["person_name"] for i in archive["incumbents"]}
+        self.assertEqual(incumbents, set(names))
+        self.assertEqual(len(archive["past"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

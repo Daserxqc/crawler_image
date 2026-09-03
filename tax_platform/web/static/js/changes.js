@@ -6,7 +6,7 @@
   const levelSelect = qs("#org_level");
   const categorySelect = qs("#region_category");
   const bureauSelect = qs("#bureau_code");
-  const deptInput = qs("#department");
+  const deptSelect = qs("#department");
   const typeSelect = qs("#change_type");
   const watchOnly = qs("#watch_only");
   const watchHint = qs("#watch-only-hint");
@@ -15,6 +15,9 @@
   let allBureaus = [];
   let staUnits = [];
   let userWatches = [];
+  let regionSeq = 0;
+  let offset = 0;
+  const limit = 50;
 
   function isHeadquartersLevel() {
     return levelSelect.value === "headquarters";
@@ -136,6 +139,40 @@
     );
   }
 
+  async function refreshDeptOptions() {
+    const level = levelSelect.value || undefined;
+    try {
+      const data = await apiGet("/api/departments/suggest", {
+        org_level: level,
+        limit: 200,
+      });
+      fillSelect(
+        deptSelect,
+        (data.items || [])
+          .map((d) => ({
+            value: d.canonical_name || d.name || "",
+            label: d.canonical_name || d.name || "",
+          }))
+          .filter((d) => d.value),
+        "全部科室"
+      );
+    } catch (err) {
+      console.warn("科室下拉加载失败", err);
+      fillSelect(deptSelect, [], "全部科室");
+    }
+  }
+
+  async function onRegionFiltersChange() {
+    const seq = ++regionSeq;
+    rebuildCategoryOptions();
+    if (isHeadquartersLevel() && !staUnits.length) {
+      await loadStaUnits();
+    }
+    if (seq !== regionSeq) return;
+    rebuildBureauOptions();
+    await refreshDeptOptions();
+  }
+
   async function loadStaUnits() {
     const data = await apiGet("/api/meta/units");
     staUnits = data.items || [];
@@ -170,9 +207,11 @@
   function queryParams() {
     const params = {
       org_level: levelSelect.value || undefined,
-      department: deptInput.value.trim() || undefined,
+      unit_category: categorySelect.value || undefined,
+      department: deptSelect.value.trim() || undefined,
       change_type: typeSelect.value || undefined,
-      limit: 50,
+      limit,
+      offset,
     };
     if (isHeadquartersLevel()) {
       const unit = bureauSelect.value;
@@ -185,17 +224,10 @@
     return params;
   }
 
-  async function onRegionFiltersChange() {
-    rebuildCategoryOptions();
-    if (isHeadquartersLevel() && !staUnits.length) {
-      await loadStaUnits();
-    }
-    rebuildBureauOptions();
-  }
-
   async function load(event) {
     event?.preventDefault();
     status.hidden = true;
+    if (event?.type === "submit") offset = 0;
     qs("#changes-btn").disabled = true;
     meta.textContent = "加载中…";
     try {
@@ -215,20 +247,6 @@
           }
         }
       }
-      // 地区分类：非具体局时，按站点分类过滤本页结果
-      const cat = categorySelect.value;
-      if (cat && !bureauSelect.value && !isHeadquartersLevel()) {
-        items = items.filter((item) => {
-          const site = allBureaus.find((b) => b.code === item.bureau_code);
-          if (!site) return false;
-          if (site.level === "province") return bureauCategory(site) === cat;
-          if (site.level === "district" && site.parent_code) {
-            const parent = allBureaus.find((b) => b.code === site.parent_code);
-            return parent ? bureauCategory(parent) === cat : false;
-          }
-          return false;
-        });
-      }
       if (watchOnly?.checked) {
         const auth = await fetchAuthState();
         if (!auth.authenticated) {
@@ -237,6 +255,7 @@
           status.textContent = "请先登录后再使用「仅看我的关注」";
           rows.innerHTML = "";
           meta.textContent = "需要登录";
+          mountSimplePager(qs("#changes-pager"), { total: 0, offset: 0, limit, onPage: () => {} });
           return;
         }
         userWatches = await fetchUserWatches(true);
@@ -247,7 +266,14 @@
         }
       }
       const watchNote = watchOnly?.checked ? " · 仅关注" : "";
-      meta.textContent = `共 ${data.total ?? 0} 条${items.length !== (data.items || []).length ? `（本页筛选后 ${items.length} 条）` : ""}${watchNote}`;
+      const total = data.total ?? 0;
+      const pageNote =
+        total > items.length && !watchOnly?.checked
+          ? `（本页 ${items.length} 条）`
+          : watchOnly?.checked && items.length !== (data.items || []).length
+            ? `（关注筛选后 ${items.length} 条）`
+            : "";
+      meta.textContent = `共 ${total} 条${pageNote}${watchNote}`;
       rows.innerHTML =
         items
           .map((item) => {
@@ -273,11 +299,24 @@
           `;
           })
           .join("") || `<div class="results-empty">暂无变动，请调整筛选后重试</div>`;
+
+      // Client-side watch filter can't page server totals — hide pager when narrowed.
+      mountSimplePager(qs("#changes-pager"), {
+        total: watchOnly?.checked ? 0 : total,
+        offset,
+        limit,
+        unitLabel: "条",
+        onPage: (nextOffset) => {
+          offset = nextOffset;
+          load().catch(() => {});
+        },
+      });
     } catch (err) {
       status.hidden = false;
       status.className = "status error";
       status.textContent = err.message || String(err);
       meta.textContent = "加载失败";
+      mountSimplePager(qs("#changes-pager"), { total: 0, offset: 0, limit, onPage: () => {} });
     } finally {
       qs("#changes-btn").disabled = false;
     }
@@ -285,29 +324,40 @@
 
   function resetForm() {
     form.reset();
+    offset = 0;
     onRegionFiltersChange().then(load).catch(() => load());
   }
 
   form.addEventListener("submit", load);
   qs("#reset-btn").addEventListener("click", resetForm);
-  watchOnly?.addEventListener("change", () => load().catch(() => {}));
+  watchOnly?.addEventListener("change", () => {
+    offset = 0;
+    load().catch(() => {});
+  });
   levelSelect.addEventListener("change", () => {
+    offset = 0;
     onRegionFiltersChange()
       .then(refreshChangesWatchBar)
+      .then(load)
       .catch(() => {});
   });
   categorySelect.addEventListener("change", () => {
+    offset = 0;
     rebuildBureauOptions();
+    refreshDeptOptions().catch(() => {});
     refreshChangesWatchBar().catch(() => {});
+    load().catch(() => {});
   });
-  bureauSelect.addEventListener("change", () => refreshChangesWatchBar().catch(() => {}));
+  bureauSelect.addEventListener("change", () => {
+    offset = 0;
+    refreshDeptOptions().catch(() => {});
+    refreshChangesWatchBar().catch(() => {});
+    load().catch(() => {});
+  });
 
   Promise.all([loadLevels(), loadBureaus(), loadStaUnits()])
-    .then(() => {
-      rebuildCategoryOptions();
-      rebuildBureauOptions();
-      return Promise.all([refreshWatchOnlyHint(), refreshChangesWatchBar(), load()]);
-    })
+    .then(() => onRegionFiltersChange())
+    .then(() => Promise.all([refreshWatchOnlyHint(), refreshChangesWatchBar(), load()]))
     .catch((err) => {
       status.hidden = false;
       status.className = "status error";

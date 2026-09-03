@@ -8,14 +8,17 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 from tax_platform.config.sites import get_site
 from tax_platform.crawler.appointment_clauses import extract_appointment_events
 from tax_platform.crawler.appointment_detail import parse_appointment_detail
 from tax_platform.crawler.appointment_list import is_appointment_list_url, parse_appointment_list
 from tax_platform.crawler.crawl_state import load_crawl_state, mark_crawl_result, save_crawl_state
-from tax_platform.crawler.http_client import create_session, fetch_html
+from tax_platform.crawler.http_client import apply_browser_cookies, create_session, fetch_html, fetch_html_browser
+from tax_platform.crawler.shanghai_xxgk import fetch_shanghai_rsrm_list_html
+from tax_platform.crawler.fujian_was5 import fetch_fujian_was5_list_html
+from tax_platform.crawler.sta_chinatax import fetch_sta_list_html
 from tax_platform.crawler.job_io import resolve_site_codes, serialize_crawl_result
 from tax_platform.crawler.jpage import (
     fetch_dataproxy_html,
@@ -61,16 +64,23 @@ def _qxtax_home_from_list_url(list_url: str) -> str | None:
 
 
 def _warm_qxtax_session(session, list_url: str) -> None:
-    """Establish Ruishu cookies before ``/api/queryGwxxQx`` (needs prior page hits)."""
+    """Establish Ruishu cookies before ``/api/queryGwxxQx`` (needs browser session)."""
     home = _qxtax_home_from_list_url(list_url)
     if not home:
         return
-    for url in (home, list_url):
-        try:
-            fetch_html(session, url, follow_meta_refresh=False)
-        except Exception:  # noqa: BLE001
-            pass
-        time.sleep(0.3)
+    try:
+        burl, _, cookies = fetch_html_browser(list_url, timeout=60)
+        apply_browser_cookies(session, cookies)
+        if burl and burl != list_url:
+            apply_browser_cookies(session, cookies)
+    except Exception as exc:  # noqa: BLE001
+        logging.debug("qxtax browser warm failed for %s: %s", list_url, exc)
+        for url in (home, list_url):
+            try:
+                fetch_html(session, url, follow_meta_refresh=False)
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.3)
 
 
 def _fetch_qxtax_zwgk_list_html(session, list_url: str) -> str | None:
@@ -136,6 +146,14 @@ def _fetch_qxtax_zwgk_list_html(session, list_url: str) -> str | None:
             break
 
     if not rows:
+        # Fallback: parse list links from browser-rendered zwgk page.
+        try:
+            _, bhtml, cookies = fetch_html_browser(list_url, timeout=60)
+            apply_browser_cookies(session, cookies)
+            if bhtml and parse_appointment_list(bhtml, list_url):
+                return bhtml
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("qxtax browser list fallback failed: %s", exc)
         return None
     links = []
     for row in rows:
@@ -146,7 +164,86 @@ def _fetch_qxtax_zwgk_list_html(session, list_url: str) -> str | None:
     return f"<html><body>{''.join(links)}</body></html>"
 
 
-def _load_appointment_list_html(session, list_url: str) -> tuple[str, str]:
+def _fetch_list_iframe_html(session, list_url: str, page_html: str) -> str | None:
+    """Expand list iframes (e.g. Qingdao ``./index_1004.html``) and parse against the shell URL."""
+    if parse_appointment_list(materialize_list_html(page_html), list_url):
+        return None
+    srcs = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', page_html, re.I)
+    for src in srcs:
+        if not src or src.startswith(("javascript:", "about:")):
+            continue
+        if not re.search(r"index_\d+\.html?", src, re.I) and "list" not in src.lower():
+            # Still try relative index_*.html under rsrm shells.
+            if "index_" not in src.lower():
+                continue
+        iframe_url = urljoin(list_url if list_url.endswith("/") else list_url.rsplit("/", 1)[0] + "/", src)
+        try:
+            _, iframe_html = fetch_html(
+                session, iframe_url, referer=list_url, follow_meta_refresh=False
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("list iframe fetch failed %s: %s", iframe_url, exc)
+            continue
+        material = materialize_list_html(iframe_html)
+        # Resolve children against the shell list URL, not the iframe path.
+        if parse_appointment_list(material, list_url):
+            return material
+    return None
+
+
+def _fetch_yunnan_col_dataproxy(session, list_url: str, page_html: str) -> str | None:
+    """Yunnan 人事任免 col pages: list is ``/col/colN/``; details are ``/art/.../art_M_…``.
+
+    Some city cols omit the jpage ``unitid`` in the shell; reuse the shared unitid
+    seen on working sibling cols (e.g. 德宏 col8329 → unitid=7837).
+    """
+    if "yunnan.chinatax.gov.cn" not in list_url:
+        return None
+    if find_dataproxy_url(page_html, list_url):
+        return None
+    col_m = re.search(r"/col/col(\d+)/", list_url)
+    if not col_m:
+        return None
+    column_id = col_m.group(1)
+    # Prefer unitids already present anywhere on the shell; else known working ones.
+    unit_ids = list(dict.fromkeys(re.findall(r"unitid[=:]?\s*[\"']?(\d+)", page_html, re.I)))
+    for fallback in ("7837", "22194", "22384"):
+        if fallback not in unit_ids:
+            unit_ids.append(fallback)
+    base = "http://yunnan.chinatax.gov.cn/"
+    for unit_id in unit_ids[:6]:
+        proxy = (
+            "https://yunnan.chinatax.gov.cn/module/web/jpage/dataproxy.jsp?"
+            f"page=1&webid=1&path={quote(base, safe='')}&columnid={column_id}"
+            f"&unitid={unit_id}&webname={quote('国家税务总局云南省税务局')}&permissiontype=0"
+        )
+        try:
+            html = fetch_dataproxy_pages(session, proxy, referer=list_url) or fetch_dataproxy_html(
+                session, proxy, referer=list_url
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("yunnan dataproxy %s unit %s: %s", column_id, unit_id, exc)
+            continue
+        material = materialize_list_html(html or "")
+        if parse_appointment_list(material, list_url):
+            return material
+    return None
+
+
+def _load_appointment_list_html(
+    session,
+    list_url: str,
+    *,
+    raise_on_fetch_fail: bool = False,
+) -> tuple[str, str]:
+    shanghai_xml = fetch_shanghai_rsrm_list_html(session, list_url)
+    if shanghai_xml and parse_appointment_list(shanghai_xml, list_url):
+        return list_url, shanghai_xml
+
+    sta_html = fetch_sta_list_html(session, list_url)
+    if sta_html and parse_appointment_list(sta_html, list_url):
+        return list_url, sta_html
+
     qxtax_html = _fetch_qxtax_zwgk_list_html(session, list_url)
     if qxtax_html and parse_appointment_list(qxtax_html, list_url):
         return list_url, qxtax_html
@@ -161,21 +258,86 @@ def _load_appointment_list_html(session, list_url: str) -> tuple[str, str]:
         final_url, html = fetch_html(session, list_url, follow_meta_refresh=False)
     except Exception as exc:  # noqa: BLE001
         logging.warning("list fetch failed %s: %s", list_url, exc)
+        shanghai_xml = fetch_shanghai_rsrm_list_html(session, list_url)
+        if shanghai_xml and parse_appointment_list(shanghai_xml, list_url):
+            return list_url, shanghai_xml
+        if raise_on_fetch_fail and not (qxtax_html or "").strip():
+            raise RuntimeError(f"list fetch failed: {exc}") from exc
         return list_url, qxtax_html or ""
     items_html = materialize_list_html(html)
     wcm = _fetch_wcm_static_pages(session, final_url, html)
     if wcm:
         return final_url, wcm
+
+    # Qingdao-style: list rows live in iframe (index_1004.html), shell has no art links.
+    iframe_html = _fetch_list_iframe_html(session, final_url, html)
+    if iframe_html and parse_appointment_list(iframe_html, final_url):
+        return final_url, iframe_html
+
+    # Yunnan col shell sometimes omits jpage unitid; synthesize dataproxy from column id.
+    yunnan_html = _fetch_yunnan_col_dataproxy(session, final_url, html)
+    if yunnan_html and parse_appointment_list(yunnan_html, final_url):
+        return final_url, yunnan_html
+
     if parse_appointment_list(items_html, final_url):
-        # Prefer paginated dataproxy when available.
+        # Prefer paginated dataproxy when available; keep first page if session POST 412s.
         proxy = find_dataproxy_url(html, final_url)
         if proxy:
-            paged = fetch_dataproxy_pages(session, proxy, referer=final_url)
-            if paged and len(parse_appointment_list(paged, final_url)) > len(
-                parse_appointment_list(items_html, final_url)
-            ):
-                return final_url, paged
+            try:
+                paged = fetch_dataproxy_pages(session, proxy, referer=final_url)
+                if paged and len(parse_appointment_list(paged, final_url)) > len(
+                    parse_appointment_list(items_html, final_url)
+                ):
+                    return final_url, paged
+            except Exception as exc:  # noqa: BLE001
+                logging.debug("dataproxy pagination skipped for %s: %s", final_url, exc)
         return final_url, items_html
+
+    # Fujian city 主动公开目录 shell: rows come from WAS5 search (chnlid), not static HTML.
+    if (
+        "fujian.chinatax.gov.cn" in final_url
+        and "/zfxxgkml/" in final_url
+        and not parse_appointment_list(items_html, final_url)
+    ):
+        try:
+            fj_html = fetch_fujian_was5_list_html(session, final_url, html)
+            if fj_html and parse_appointment_list(fj_html, final_url):
+                return final_url, fj_html
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("fujian was5 list skipped for %s: %s", final_url, exc)
+        # Last resort: browser zTree click (slow / flaky — avoid when WAS5 works).
+        try:
+            burl, bhtml, cookies = fetch_html_browser(final_url, timeout=60)
+            apply_browser_cookies(session, cookies)
+            bitems = materialize_list_html(bhtml)
+            if parse_appointment_list(bitems, burl):
+                return burl, bitems
+            m = re.search(
+                r"https?://fujian\.chinatax\.gov\.cn/[^\"'\s]+/(?:rsxx_\d+|rsrm)/?",
+                bhtml,
+                re.I,
+            )
+            if m:
+                cand = m.group(0)
+                if not cand.rstrip("/").endswith((".htm", ".html")):
+                    _, ch, cookies2 = fetch_html_browser(cand, timeout=60)
+                    apply_browser_cookies(session, cookies2)
+                    citems = materialize_list_html(ch)
+                    if parse_appointment_list(citems, cand):
+                        return cand, citems
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("fujian ztree/list browser skipped for %s: %s", final_url, exc)
+
+    # Shanxi son/list: HTTP 200 shell with JS-rendered rows — needs browser wait.
+    if "/son/list/" in final_url and not parse_appointment_list(items_html, final_url):
+        try:
+            burl, bhtml, cookies = fetch_html_browser(final_url, timeout=60)
+            apply_browser_cookies(session, cookies)
+            bitems = materialize_list_html(bhtml)
+            if parse_appointment_list(bitems, burl):
+                return burl, bitems
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("son/list browser fetch skipped for %s: %s", final_url, exc)
 
     xxgk_html = fetch_xxgk_list_html(session, final_url, html)
     if xxgk_html and parse_appointment_list(xxgk_html, final_url):
@@ -184,9 +346,13 @@ def _load_appointment_list_html(session, list_url: str) -> tuple[str, str]:
     proxy = find_dataproxy_url(html, final_url)
     if not proxy:
         return final_url, items_html
-    proxy_html = fetch_dataproxy_pages(session, proxy, referer=final_url) or fetch_dataproxy_html(
-        session, proxy, referer=final_url
-    )
+    try:
+        proxy_html = fetch_dataproxy_pages(session, proxy, referer=final_url) or fetch_dataproxy_html(
+            session, proxy, referer=final_url
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.debug("dataproxy fetch skipped for %s: %s", final_url, exc)
+        return final_url, items_html
     return final_url, materialize_list_html(proxy_html)
 
 

@@ -180,6 +180,9 @@ def apply_correction(
     if target_type not in {"appointment_event", "leader_duty", "person"}:
         raise ValueError("target_type must be appointment_event|leader_duty|person")
 
+    # Capture person keys before mutate/delete so tenure can be recomputed.
+    keys_before = _person_keys_for_target(db, target_type, target_id)
+
     if delete:
         result = _delete_target(db, target_type, target_id, note=note, anomaly_id=anomaly_id)
     else:
@@ -200,10 +203,68 @@ def apply_correction(
             (_now(), target_type, target_id),
         )
 
+    keys = set(keys_before)
+    keys |= _touched_person_keys(db, target_type, target_id, result)
+    if "person_name" in (patch or {}) and keys_before:
+        for bureau, _old in keys_before:
+            keys.add((bureau, str(patch["person_name"])))
+    if "name" in (patch or {}) and keys_before:
+        for bureau, _old in keys_before:
+            keys.add((bureau, str(patch["name"])))
+    if keys:
+        from tax_platform.store.tenure import recompute_persons
+
+        recompute_persons(db, keys)
+        result["recomputed_persons"] = len(keys)
+
     db.commit()
     if owns:
         db.close()
     return result
+
+
+def _person_keys_for_target(
+    db: sqlite3.Connection, target_type: str, target_id: str
+) -> set[tuple[str, str]]:
+    if target_type == "person":
+        row = db.execute("SELECT bureau_code, name FROM persons WHERE id = ?", (target_id,)).fetchone()
+        if row and row["bureau_code"] and row["name"]:
+            return {(row["bureau_code"], row["name"])}
+        if ":" in target_id:
+            b, n = target_id.split(":", 1)
+            if b and n:
+                return {(b, n)}
+        return set()
+    table = "appointment_events" if target_type == "appointment_event" else "leader_duties"
+    row = db.execute(
+        f"SELECT bureau_code, person_name FROM {table} WHERE id = ?", (target_id,)
+    ).fetchone()
+    if row and row["bureau_code"] and row["person_name"]:
+        return {(row["bureau_code"], row["person_name"])}
+    return set()
+
+
+def _touched_person_keys(
+    db: sqlite3.Connection,
+    target_type: str,
+    target_id: str,
+    result: dict[str, Any],
+) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    bureau = result.get("bureau_code")
+    name = result.get("person_name") or result.get("name")
+    if bureau and name:
+        keys.add((str(bureau), str(name)))
+    old = result.get("old") or {}
+    if isinstance(old, dict):
+        old_name = old.get("person_name") or old.get("name")
+        if bureau and old_name:
+            keys.add((str(bureau), str(old_name)))
+    if target_type == "person" and ":" in target_id:
+        b, n = target_id.split(":", 1)
+        if b and n:
+            keys.add((b, n))
+    return keys
 
 
 def ignore_anomaly(anomaly_id: int, *, note: str | None = None, conn: sqlite3.Connection | None = None) -> dict[str, Any]:

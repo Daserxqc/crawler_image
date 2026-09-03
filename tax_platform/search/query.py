@@ -52,7 +52,7 @@ def search_people(
     *limit* ``0`` means enrich all matches (export). Prefer ``search_people_page``
     for UI pagination so only one page is enriched.
     """
-    _, items = search_people_page(
+    _total, _current, items = search_people_page(
         title=title,
         department=department,
         name=name,
@@ -83,8 +83,12 @@ def search_people_page(
     limit: int = 50,
     offset: int = 0,
     conn: sqlite3.Connection | None = None,
-) -> tuple[int, list[dict[str, Any]]]:
-    """Collect matches cheaply, return ``(total, enriched_page)``."""
+) -> tuple[int, int, list[dict[str, Any]]]:
+    """Collect matches cheaply, return ``(total, current_count, enriched_page)``.
+
+    ``current_count`` is how many of *all* matches are marked 现任 in ``persons``,
+    not just the current page.
+    """
     title_q = (title or "").strip()
     dept_q = clean_department_name(department) or (department or "").strip()
     name_q = (name or "").strip()
@@ -147,12 +151,18 @@ def search_people_page(
             if not allowed_bureaus:
                 if owns:
                     db.close()
-                return 0, []
+                return 0, 0, []
             ph = ",".join("?" * len(allowed_bureaus))
             where += f" AND bureau_code IN ({ph})"
             args.extend(allowed_bureaus)
 
         total = int(db.execute(f"SELECT COUNT(*) FROM persons WHERE {where}", args).fetchone()[0])
+        current_count = int(
+            db.execute(
+                f"SELECT COUNT(*) FROM persons WHERE {where} AND COALESCE(is_current, 0) = 1",
+                args,
+            ).fetchone()[0]
+        )
         page_limit = limit if limit > 0 else min(total, 2000)
         page_sql = (
             f"SELECT bureau_code, name FROM persons WHERE {where} "
@@ -197,7 +207,7 @@ def search_people_page(
             ]
         if owns:
             db.close()
-        return total, results
+        return total, current_count, results
 
     # 0) Name-only / name-primary: pull from persons + leaders + events by name
     if name_q and not title_q and not dept_q:
@@ -305,17 +315,18 @@ def search_people_page(
     if org_level:
         ranked_keys = [key for key in ranked_keys if _org_level_matches(key[0], org_level)]
 
+    if date_from or date_to:
+        ranked_keys = _filter_keys_by_appointment_dates(
+            db, ranked_keys, hits, date_from, date_to
+        )
+
     total = len(ranked_keys)
-    need_heavy_filter = bool(
-        (unit_code and unit_code not in {""})
-        or cat_q
-        or date_from
-        or date_to
-    )
+    current_count = _count_persons_is_current(db, ranked_keys)
+    need_heavy_filter = bool((unit_code and unit_code not in {""}) or cat_q)
 
     if limit > 0:
         if need_heavy_filter:
-            # Over-fetch then filter; still far cheaper than enriching everyone.
+            # Over-fetch then filter unit/category; still cheaper than enriching everyone.
             window = ranked_keys[offset : offset + max(limit * 25, limit)]
         else:
             window = ranked_keys[offset : offset + limit]
@@ -333,10 +344,6 @@ def search_people_page(
         roles = sorted(meta["roles"])
         if dept_q and not roles:
             roles = ["supervisor"] if supervised else ["appointee"]
-        if (date_from or date_to) and not appointments and "supervisor" not in roles:
-            if "appointee" in roles or not dept_q:
-                if "supervisor" not in roles:
-                    continue
         results.append(
             enrich_hit_display(
                 {
@@ -390,7 +397,119 @@ def search_people_page(
         results = results[:limit]
     if owns:
         db.close()
-    return total, results
+    return total, current_count, results
+
+
+def _count_persons_is_current(
+    db: sqlite3.Connection, keys: list[tuple[str, str]]
+) -> int:
+    """Count matches with persons.is_current=1 (full result set, not one page)."""
+    if not keys:
+        return 0
+    total = 0
+    chunk = 400
+    for i in range(0, len(keys), chunk):
+        part = keys[i : i + chunk]
+        placeholders = ",".join(["(?,?)"] * len(part))
+        args: list[Any] = []
+        for bureau, name in part:
+            args.extend([bureau, name])
+        row = db.execute(
+            f"""
+            SELECT COUNT(*) AS n FROM persons
+            WHERE COALESCE(is_current, 0) = 1
+              AND (bureau_code, name) IN ({placeholders})
+            """,
+            args,
+        ).fetchone()
+        total += int(row["n"] if row and "n" in row.keys() else row[0])
+    return total
+
+
+def _filter_keys_by_appointment_dates(
+    db: sqlite3.Connection,
+    keys: list[tuple[str, str]],
+    hits: dict[tuple[str, str], dict[str, Any]],
+    date_from: str | None,
+    date_to: str | None,
+) -> list[tuple[str, str]]:
+    """Keep keys that have an in-range appointment, or are supervisor-only matches."""
+    if not keys or (not date_from and not date_to):
+        return keys
+    start = (date_from or "")[:10]
+    end = (date_to or "")[:10]
+    in_range: set[tuple[str, str]] = set()
+    chunk = 400
+    for i in range(0, len(keys), chunk):
+        part = keys[i : i + chunk]
+        placeholders = ",".join(["(?,?)"] * len(part))
+        args: list[Any] = []
+        for bureau, name in part:
+            args.extend([bureau, name])
+        rows = db.execute(
+            f"""
+            SELECT bureau_code, person_name, effective_on
+            FROM appointment_events
+            WHERE (bureau_code, person_name) IN ({placeholders})
+            """,
+            args,
+        ).fetchall()
+        # Also pull same-name events (other bureau) for keys with no local rows.
+        local_names = {name for _b, name in part}
+        name_ph = ",".join("?" * len(local_names)) if local_names else ""
+        by_name: dict[str, list[sqlite3.Row]] = {}
+        if local_names:
+            for row in db.execute(
+                f"""
+                SELECT bureau_code, person_name, effective_on
+                FROM appointment_events
+                WHERE person_name IN ({name_ph})
+                """,
+                list(local_names),
+            ):
+                by_name.setdefault(row["person_name"], []).append(row)
+
+        seen_local: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (row["bureau_code"], row["person_name"])
+            seen_local.add(key)
+            day = (row["effective_on"] or "")[:10]
+            if not day:
+                if not start:
+                    in_range.add(key)
+                continue
+            if start and day < start:
+                continue
+            if end and day > end:
+                continue
+            in_range.add(key)
+
+        for bureau, name in part:
+            if (bureau, name) in seen_local:
+                continue
+            for row in by_name.get(name, []):
+                day = (row["effective_on"] or "")[:10]
+                if not day:
+                    if not start:
+                        in_range.add((bureau, name))
+                        break
+                    continue
+                if start and day < start:
+                    continue
+                if end and day > end:
+                    continue
+                in_range.add((bureau, name))
+                break
+
+    out: list[tuple[str, str]] = []
+    for key in keys:
+        if key in in_range:
+            out.append(key)
+            continue
+        roles = hits.get(key, {}).get("roles") or set()
+        if "supervisor" in roles:
+            out.append(key)
+    return out
 
 
 def _rank_hit_keys_cheap(
@@ -533,6 +652,7 @@ def lookup_department(
     org_level: str | None = None,
     bureau_code: str | None = None,
     staff_limit: int = 30,
+    staff_offset: int = 0,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """一站式：科室 → 分管领导 + 任职人员。
@@ -542,6 +662,8 @@ def lookup_department(
     owns = conn is None
     db = conn or connect()
     dept_q = (clean_department_name(department) or (department or "")).strip()
+    staff_offset = max(0, int(staff_offset or 0))
+    page_n = staff_limit if staff_limit > 0 else 100
     supervisors: list[dict[str, Any]] = []
     if dept_q:
         supervisors = leaders_for_department(
@@ -550,29 +672,20 @@ def lookup_department(
             bureau_code=bureau_code,
             conn=db,
         )
-        fetch_n = max(staff_limit * 8, 80) if staff_limit > 0 else 300
-        total, people = search_people_page(
-            department=dept_q,
-            org_level=org_level,
-            bureau_code=bureau_code,
-            limit=fetch_n,
-            offset=0,
-            conn=db,
-        )
-        staff = [p for p in people if "appointee" in p.get("roles", [])]
-        if staff_limit > 0:
-            staff = staff[:staff_limit]
-        staff_count = total
+    total, _current, people = search_people_page(
+        department=dept_q or None,
+        org_level=org_level,
+        bureau_code=bureau_code,
+        limit=page_n,
+        offset=staff_offset,
+        conn=db,
+    )
+    if dept_q:
+        staff = [p for p in people if "appointee" in (p.get("roles") or [])]
+        if not staff:
+            staff = people
     else:
-        page_n = staff_limit if staff_limit > 0 else 100
-        total, staff = search_people_page(
-            org_level=org_level,
-            bureau_code=bureau_code,
-            limit=page_n,
-            offset=0,
-            conn=db,
-        )
-        staff_count = total
+        staff = people
     result = {
         "department": dept_q or "全部",
         "org_level": org_level,
@@ -580,7 +693,9 @@ def lookup_department(
         "supervising_leaders": supervisors,
         "staff": staff,
         "supervisor_count": len(supervisors),
-        "staff_count": staff_count,
+        "staff_count": total,
+        "staff_limit": page_n,
+        "staff_offset": staff_offset,
         "browse_all": not bool(dept_q),
     }
     if owns:
@@ -594,6 +709,7 @@ def penetrate_department(
     org_level: str | None = None,
     bureau_code: str | None = None,
     staff_limit: int = 20,
+    staff_offset: int = 0,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """层级穿透：科室 → 分管领导 → 单位层级信息。空科室=按地区浏览全体。"""
@@ -607,6 +723,7 @@ def penetrate_department(
         org_level=org_level,
         bureau_code=bureau_code,
         staff_limit=limit,
+        staff_offset=staff_offset,
         conn=db,
     )
     upward: list[dict[str, Any]] = []

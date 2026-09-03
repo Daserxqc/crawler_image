@@ -7,6 +7,8 @@ from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 from bs4 import BeautifulSoup
 
+from tax_platform.config.list_url_normalize import prefer_http_for_legacy_ssl_hosts
+
 DATAPROXY_RE = re.compile(
     r"/module/web/jpage/dataproxy\.jsp\?[^\"'<\s]+",
     re.IGNORECASE,
@@ -51,7 +53,10 @@ def find_dataproxy_url(html: str, page_url: str) -> str | None:
                 query_parts["appid"] = fields["appid"]
             query = urlencode(query_parts)
             parsed = urlparse(page_url)
-            return urlunparse((parsed.scheme, parsed.netloc, "/module/web/jpage/dataproxy.jsp", "", query, ""))
+            scheme = parsed.scheme
+            if (parsed.hostname or "").lower() == "jilin.chinatax.gov.cn":
+                scheme = "http"
+            return urlunparse((scheme, parsed.netloc, "/module/web/jpage/dataproxy.jsp", "", query, ""))
 
     for href in DATAPROXY_RE.findall(html):
         return urljoin(page_url, href)
@@ -60,6 +65,8 @@ def find_dataproxy_url(html: str, page_url: str) -> str | None:
 
 def fetch_dataproxy_html(session, proxy_url: str, *, referer: str | None = None) -> str:
     """Fetch jpage dataproxy content; some sites only return records on POST."""
+    proxy_url = prefer_http_for_legacy_ssl_hosts(proxy_url)
+    referer = prefer_http_for_legacy_ssl_hosts(referer) if referer else referer
     headers = {}
     if referer:
         headers["Referer"] = referer

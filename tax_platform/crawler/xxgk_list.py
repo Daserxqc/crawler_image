@@ -1,8 +1,9 @@
-"""Helpers for 政府信息公开 (xxgk) AJAX list columns (Zhejiang / Shandong style)."""
+"""Helpers for 政府信息公开 (xxgk) AJAX list columns (Zhejiang / Shandong / Jilin style)."""
 
 from __future__ import annotations
 
 import re
+from html import unescape
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -11,16 +12,28 @@ _TREE_IFRAME_RE = re.compile(
     r"""(?:src|SRC)\s*=\s*['"]([^'"]*xxgk/tree\.jsp\?[^'"]+)['"]""",
     re.I,
 )
-_AREA_RE = re.compile(r"[?&]area=([0-9A-Za-z]+)", re.I)
-_DIVID_RE = re.compile(r"[?&]divid=(div\d+)", re.I)
+# HTML often encodes & as &amp; inside iframe src.
+_AREA_RE = re.compile(r"(?:[?&]|&amp;)area=([0-9A-Za-z]+)", re.I)
+_DIVID_RE = re.compile(r"(?:[?&]|&amp;)divid=(div\d+)", re.I)
+# Tree nodes may use JS-escaped quotes: funclick(\'rsglrsrm\',\'...\')...">人事任免
 _FUNCLICK_RE = re.compile(
     r"""funclick\(\s*\\?['"]([A-Za-z0-9]+)\\?['"]\s*,[^)]*\)\s*;?\s*\\?["']?\s*>\s*([^<]{1,40})""",
     re.I,
 )
+_FUNCLICK_LOOSE_RE = re.compile(
+    r"""funclick\(\s*\\?['"]([A-Za-z0-9]+)\\?['"][^)]*\)[^<]{0,80}>\s*([^<]{1,40})""",
+    re.I,
+)
 _LOAD_DYNAMIC_SD = re.compile(
-    r"""loadDynamic\(\s*['"](/module/xxgk/search\.jsp\?infotypeId=)['"]\s*\+\s*[a-zA-Z_]+"""
+    r"""loadDynamic\(\s*['"](/module/xxgk/search\.jsp\?(?:standardXxgk=\d+&)?infotypeId=)['"]\s*\+\s*[a-zA-Z_]+"""
     r""".*?area=([0-9A-Za-z]+)['"]\s*,\s*['"]([^'"]+)['"]"""
     r"""(?:\s*,\s*['"][^'"]*['"]){3}\s*,\s*['"]([^'"]*)['"]""",
+    re.I | re.S,
+)
+# Jilin shells: loadDynamic('...&area=AREA', 'div4', ...) may include encodeURI(b) mid-arg.
+_LOAD_DYNAMIC_AREA = re.compile(
+    r"""loadDynamic\(\s*['"][^'"]*xxgk/search\.jsp[^'"]*area=([0-9A-Za-z]+)['"]"""
+    r"""(?:\s*\+\s*[^,]+)*\s*,\s*['"]([^'"]+)['"]""",
     re.I | re.S,
 )
 
@@ -37,36 +50,44 @@ def find_xxgk_load_call(html: str) -> tuple[str, str, str, str] | None:
     if simple and "+" not in simple.group(0).split(",")[0]:
         return simple.group(1), simple.group(2), simple.group(3), simple.group(6)
 
-    # Zhejiang concat style:
-    # loadDynamic('/module/xxgk/search.jsp?infotypeId=Z2401'+a+'&vc_title='+encodeURI(b)+'&vc_number='+encodeURI(c)+'&area=AREA',
-    #             'divID', '0','1000','UID','WEBID', ...)
+    # Zhejiang / Jilin concat style:
+    # loadDynamic('/module/xxgk/search.jsp?infotypeId=Z2401'+a+...&area=AREA', ...)
+    # loadDynamic('/module/xxgk/search.jsp?standardXxgk=1&infotypeId='+a+...&area=AREA', 'div4', ...)
     concat = re.search(
-        r"loadDynamic\(\s*['\"](/module/xxgk/search\.jsp\?infotypeId=[A-Za-z0-9]+)['\"]"
+        r"loadDynamic\(\s*['\"](/module/xxgk/search\.jsp\?(?:standardXxgk=\d+&)?infotypeId=)([A-Za-z0-9]*)['\"]"
         r".*?area=([0-9A-Za-z]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]\s*,"
         r"\s*['\"][^'\"]*['\"]\s*,\s*['\"][^'\"]*['\"]\s*,\s*['\"]([^'\"]*)['\"]",
         html,
         re.I | re.S,
     )
     if concat:
-        path = f"{concat.group(1)}&vc_title=&vc_number=&area={concat.group(2)}"
-        return path, concat.group(3), concat.group(4), concat.group(5)
+        path = f"{concat.group(1)}{concat.group(2)}&vc_title=&vc_number=&area={concat.group(3)}"
+        return path, concat.group(4), concat.group(5), concat.group(6)
     return None
 
 
 def extract_xxgk_shell(html: str, page_url: str) -> dict[str, str] | None:
-    """Pull area / divid / webid / tree URL from a statutory-disclosure shell page."""
+    """Pull area / divid / webid / tree URL from a statutory-disclosure shell page.
+
+    Jilin city hubs pass the bureau id as ``?vc_xxgkarea=...`` (and often ``&number=``
+    for the tree infotype). The list itself is loaded via ``/module/xxgk/search.jsp``.
+    """
     area = None
     divid = None
     webid = "1"
     tree = None
 
+    qs = parse_qs(urlparse(page_url).query)
+    area = (qs.get("vc_xxgkarea") or qs.get("area") or [None])[0] or None
+
     iframe = _TREE_IFRAME_RE.search(html)
     if iframe:
-        tree = urljoin(page_url, iframe.group(1))
-        area_m = _AREA_RE.search(tree)
-        divid_m = _DIVID_RE.search(tree)
+        tree_raw = unescape(iframe.group(1))
+        tree = urljoin(page_url, tree_raw)
+        area_m = _AREA_RE.search(tree_raw)
+        divid_m = _DIVID_RE.search(tree_raw)
         if area_m:
-            area = area_m.group(1)
+            area = area or area_m.group(1)
         if divid_m:
             divid = divid_m.group(1)
 
@@ -76,16 +97,25 @@ def extract_xxgk_shell(html: str, page_url: str) -> dict[str, str] | None:
         divid = divid or sd.group(3)
         webid = sd.group(4) or webid
 
-    # Fallback: loadDynamic with empty/variable infotype + area in query
+    if not area or not divid:
+        m = _LOAD_DYNAMIC_AREA.search(html)
+        if m:
+            area = area or m.group(1)
+            divid = divid or m.group(2)
+
+    # HTML body may embed vc_xxgkarea=... even when the request URL omitted it.
     if not area:
-        m = re.search(
-            r"loadDynamic\([^)]*area=([0-9A-Za-z]+)[^)]*['\"]\s*,\s*['\"]([^'\"]+)['\"]",
-            html,
-            re.I | re.S,
-        )
+        m = re.search(r"vc_xxgkarea=([0-9A-Za-z]+)", html, re.I)
         if m:
             area = m.group(1)
-            divid = divid or m.group(2)
+
+    if area and not divid:
+        divid = "div4"
+    if area and not tree:
+        tree = urljoin(
+            page_url,
+            f"/module/xxgk/tree.jsp?standardXxgk=1&area={area}&divid={divid or 'div4'}",
+        )
 
     if not area or not divid:
         return None
@@ -95,11 +125,12 @@ def extract_xxgk_shell(html: str, page_url: str) -> dict[str, str] | None:
 def parse_xxgk_tree_labels(tree_html: str) -> dict[str, str]:
     """Map sidebar label → infotypeId from dTree funclick(...) nodes."""
     out: dict[str, str] = {}
-    for match in _FUNCLICK_RE.finditer(tree_html):
-        infotype_id = match.group(1)
-        label = re.sub(r"\s+", "", match.group(2))
-        if label and infotype_id:
-            out[label] = infotype_id
+    for regex in (_FUNCLICK_RE, _FUNCLICK_LOOSE_RE):
+        for match in regex.finditer(tree_html or ""):
+            infotype_id = match.group(1)
+            label = re.sub(r"\s+", "", match.group(2))
+            if label and infotype_id and label not in out:
+                out[label] = infotype_id
     return out
 
 
@@ -179,6 +210,8 @@ def fetch_xxgk_list_html(session, page_url: str, page_html: str) -> str | None:
     parsed = urlparse(page_url)
     qs = parse_qs(parsed.query)
     number = (qs.get("number") or [None])[0]
+    if number is not None:
+        number = number.strip() or None
 
     shell = extract_xxgk_shell(page_html, page_url)
     if shell:
@@ -215,6 +248,8 @@ def fetch_xxgk_list_html(session, page_url: str, page_html: str) -> str | None:
     # Prefer ?number= over empty default cid from shell page.
     if number:
         cid = number
+    if not cid:
+        return None
     ajax_url = urljoin(page_url, path_with_query)
     parsed_ajax = urlparse(ajax_url)
     data = (

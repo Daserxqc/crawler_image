@@ -10,6 +10,8 @@
   const deptSelect = qs("#department");
   const titleSelect = qs("#title");
   const nameInput = qs("#name");
+  const dateFromInput = qs("#date_from");
+  const dateToInput = qs("#date_to");
   const watchBar = qs("#search-watch-bar");
 
   let allBureaus = [];
@@ -239,6 +241,12 @@
             <span class="meta-v">${escapeHtml(hit.title_display || current.title || "—")}</span>
           </div>
           <div class="person-meta-item">
+            <span class="meta-k">分管科室</span>
+            <span class="meta-v">${escapeHtml(
+              (hit.supervised_departments || current.departments || []).join("、") || "—"
+            )}</span>
+          </div>
+          <div class="person-meta-item">
             <span class="meta-k">地区</span>
             <span class="meta-v">${escapeHtml(hit.region_display || "—")}</span>
           </div>
@@ -306,7 +314,7 @@
     let idx = 0;
     const renderGroup = (hits, title) => {
       if (!hits.length) return "";
-      let block = `<h3 class="results-group-title">${escapeHtml(title)}（${hits.length}人）</h3>`;
+      let block = `<h3 class="results-group-title">${escapeHtml(title)}（本页 ${hits.length} 人）</h3>`;
       let lastUnit = null;
       hits.forEach((hit) => {
         const unit = hit.unit_display || hit.region_display || "其他单位";
@@ -326,7 +334,9 @@
 
   function hasSearchCriteria(params) {
     return (
-      [params.department, params.title, params.name].some((v) => String(v || "").trim()) ||
+      [params.department, params.title, params.name, params.date_from, params.date_to].some(
+        (v) => String(v || "").trim()
+      ) ||
       [params.org_level, params.bureau_code, params.unit, params.unit_category].some(
         (v) => String(v || "").trim()
       )
@@ -343,6 +353,8 @@
       department: deptSelect.value,
       title: parseTitleQuery(titleSelect.value),
       name: nameInput.value.trim(),
+      date_from: dateFromInput?.value || "",
+      date_to: dateToInput?.value || "",
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     };
@@ -365,6 +377,9 @@
     const nextDisabled = page >= pages;
     pagination.hidden = false;
     pagination.innerHTML = `
+      <button class="btn secondary pager-btn" type="button" id="pager-first" ${
+        prevDisabled ? "disabled" : ""
+      }>首页</button>
       <button class="btn secondary pager-btn" type="button" id="pager-prev" ${
         prevDisabled ? "disabled" : ""
       }>上一页</button>
@@ -386,8 +401,12 @@
       <button class="btn secondary pager-btn" type="button" id="pager-next" ${
         nextDisabled ? "disabled" : ""
       }>下一页</button>
+      <button class="btn secondary pager-btn" type="button" id="pager-last" ${
+        nextDisabled ? "disabled" : ""
+      }>尾页</button>
     `;
     if (!prevDisabled) {
+      qs("#pager-first", pagination).addEventListener("click", () => goToPage(1));
       qs("#pager-prev", pagination).addEventListener("click", () => goToPage(page - 1));
     }
     const jumpInput = qs("#pager-input", pagination);
@@ -406,6 +425,7 @@
     });
     if (!nextDisabled) {
       qs("#pager-next", pagination).addEventListener("click", () => goToPage(page + 1));
+      qs("#pager-last", pagination).addEventListener("click", () => goToPage(pages));
     }
   }
 
@@ -439,7 +459,7 @@
       lastHits = data.items || [];
       searchTotal = data.total ?? 0;
       const filtered = filterHitsByCategory(lastHits);
-      const currentCount = filtered.filter((h) => h.current?.is_current).length;
+      const currentCount = Number(data.current_count ?? 0);
       const pageNum = Math.floor((data.offset ?? 0) / PAGE_SIZE) + 1;
       meta.textContent = `共检索到 ${searchTotal} 位人员（第 ${pageNum} 页，本页 ${lastHits.length} 条${
         categorySelect.value ? `，分类筛选后 ${filtered.length} 条` : ""
@@ -450,7 +470,7 @@
         status.hidden = false;
         status.className = "status";
         status.textContent = "没有匹配结果";
-      } else if (currentCount) {
+      } else {
         meta.textContent += ` · 现任 ${currentCount} 人`;
       }
       if (options.scroll) {
@@ -481,9 +501,9 @@
     clearPagination();
   }
 
-  function exportCsv() {
+  function exportSearch(fmt) {
     const params = new URLSearchParams();
-    const map = { ...searchParams(), fmt: "csv", limit: 500 };
+    const map = { ...searchParams(), fmt, limit: 500 };
     Object.entries(map).forEach(([k, v]) => {
       if (String(v || "").trim()) params.set(k, v);
     });
@@ -492,7 +512,8 @@
 
   form.addEventListener("submit", runSearch);
   qs("#reset-btn").addEventListener("click", resetForm);
-  qs("#export-btn").addEventListener("click", exportCsv);
+  qs("#export-btn").addEventListener("click", () => exportSearch("csv"));
+  qs("#export-xlsx-btn")?.addEventListener("click", () => exportSearch("xlsx"));
   levelSelect.addEventListener("change", () => {
     onRegionFiltersChange()
       .then(refreshSearchWatchBar)
@@ -510,7 +531,7 @@
   });
 
   const boot = new URLSearchParams(window.location.search);
-  ["name", "department", "title", "org_level", "bureau_code"].forEach((key) => {
+  ["name", "department", "title", "org_level", "bureau_code", "date_from", "date_to"].forEach((key) => {
     if (boot.get(key) && qs(`#${key}`)) qs(`#${key}`).value = boot.get(key);
   });
 

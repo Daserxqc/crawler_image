@@ -1,0 +1,16 @@
+---
+description: Before list-head / WAF / site-URL / xxgk crawl work, read the pitfall log and classify the failure first.
+globs: tax_platform/crawler/**/*.py,tax_platform/config/**/*.py,scripts/crawl*.py,scripts/*list_heads*.py,scripts/seed_list_heads*.py,docs/crawl-pitfalls*.md
+alwaysApply: false
+---
+# Crawl pitfalls — read before acting
+
+Before any work on list-head monitoring, appointment list fetch, WAF/412, browser/CDP fallback, xxgk/信息公开 shells, or fixing “failed bureau” scans:
+
+1. **Read** `docs/crawl-pitfalls-2026-09-01.md` (and any newer `docs/crawl-pitfalls-*.md`).
+2. **Classify** the failure bucket (true WAF 412 vs dead URL vs 403 vs SSL vs xxgk AJAX shell). Do not treat all 412s as Beijing.
+3. **Prefer stored** `appointment_list_url` for that bureau (city URLs first). Do not thrash province bad links or blind-retry the whole failure table.
+4. **One representative site** until it works; then extend only the same bucket.
+5. **URL 重发现**：见 `scripts/rediscover_list_urls.py` + `url_rediscovery.py` — 只信已存来源，失败则 NEEDS_USER，禁止瞎猜。
+
+Do not start long Playwright/CDP retries or `--retry-only` over all failures without completing steps 1–3.

@@ -61,6 +61,42 @@ def post_id(bureau_code: str, department: str, title: str = "") -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
+def _post_unit_label(bureau_code: str, bureau_name: str | None) -> str:
+    """Short sub-unit label when the event targets a bureau below ``bureau_code``."""
+    bn = (bureau_name or "").strip()
+    if not bn or "税务局" not in bn:
+        return ""
+    try:
+        from tax_platform.config.sites import get_site
+        from tax_platform.search.display import short_bureau_name
+
+        site = get_site(bureau_code)
+        parent = site.name
+        short = short_bureau_name(bn, parent_name=parent) or bn
+        if bn == parent or short == short_bureau_name(parent):
+            return ""
+        return short
+    except KeyError:
+        from tax_platform.search.display import short_bureau_name
+
+        return short_bureau_name(bn) or bn
+
+
+def post_department_key(
+    bureau_code: str,
+    department_raw: str | None,
+    bureau_name: str | None = None,
+) -> str:
+    """Department key for a post, scoped to sub-bureau when clause names one."""
+    dept = _norm_dept(department_raw)
+    unit = _post_unit_label(bureau_code, bureau_name)
+    if unit and dept:
+        return f"{unit} · {dept}"
+    if unit:
+        return unit
+    return dept
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -69,11 +105,37 @@ def _norm_dept(raw: str | None) -> str:
     return clean_department_name(raw or "") or (raw or "").strip()
 
 
+def _dept_compact(raw: str | None) -> str:
+    """Whitespace-insensitive department key for matching stored ``unit · dept`` labels."""
+    return re.sub(r"\s+", "", raw or "")
+
+
+def _title_allows_multiple_holders(title: str | None) -> bool:
+    """副职 / 职级岗可多人同时在任，不做「接任」闭链。"""
+    t = (title or "").strip()
+    if not t:
+        return False
+    head = t.split("、")[0]
+    if "副" in head:
+        return True
+    return any(
+        x in head
+        for x in ("主办", "调研员", "巡视员", "委员", "成员", "助理")
+    )
+
+
+def _append_past_row(past_rows: list, item: dict, **extra) -> None:
+    past_rows.append({**item, **extra})
+
+
 def rebuild_org_posts(conn: sqlite3.Connection) -> dict[str, int]:
     """Rebuild org_posts / org_post_tenures from appointment_events.
 
-    Post key = bureau + cleaned department + title_raw (as published).
-    Tenure logic mirrors post_archive (open/close on appoint/dismiss).
+    Post key = bureau + scoped department + title_raw.
+
+    When a city notice appoints several district bureau chiefs, ``bureau_name``
+    on each event distinguishes 临河区 / 乌拉特后旗 / … so they are not merged
+    into one post with fake same-day 历任.
     """
     ensure_posts_schema(conn)
     ensure_identity_schema(conn)
@@ -99,7 +161,7 @@ def rebuild_org_posts(conn: sqlite3.Connection) -> dict[str, int]:
         if not is_plausible_person_name(name):
             continue
         bureau = row["bureau_code"]
-        dept = _norm_dept(row["department_raw"])
+        dept = post_department_key(bureau, row["department_raw"], row["bureau_name"])
         title = (row["title_raw"] or "").strip()
         if not dept:
             continue
@@ -120,14 +182,13 @@ def rebuild_org_posts(conn: sqlite3.Connection) -> dict[str, int]:
         if ctype.value in {"dismiss", "retire"}:
             prev = open_tenures.pop(name, None)
             if prev:
-                past_rows.append(
-                    {
-                        **prev,
-                        "post_id": pid,
-                        "ended_on": row["effective_on"],
-                        "end_change_type": ctype.value,
-                        "is_current": 0,
-                    }
+                _append_past_row(
+                    past_rows,
+                    prev,
+                    post_id=pid,
+                    ended_on=row["effective_on"],
+                    end_change_type=ctype.value,
+                    is_current=0,
                 )
             continue
 
@@ -144,31 +205,30 @@ def rebuild_org_posts(conn: sqlite3.Connection) -> dict[str, int]:
             continue
         seen_event_keys.add(event_key)
 
-        # New appoint on this post: close *other* open incumbents (successor).
-        for other_name in list(open_tenures.keys()):
-            if other_name == name:
-                continue
-            other = open_tenures.pop(other_name)
-            past_rows.append(
-                {
-                    **other,
-                    "post_id": pid,
-                    "ended_on": row["effective_on"],
-                    "end_change_type": "succeeded",
-                    "is_current": 0,
-                }
-            )
+        # Singleton posts (局长/科长): new appoint closes prior holder.
+        if not _title_allows_multiple_holders(title):
+            for other_name in list(open_tenures.keys()):
+                if other_name == name:
+                    continue
+                other = open_tenures.pop(other_name)
+                _append_past_row(
+                    past_rows,
+                    other,
+                    post_id=pid,
+                    ended_on=row["effective_on"],
+                    end_change_type="succeeded",
+                    is_current=0,
+                )
 
         prev = open_tenures.get(name)
         if prev and prev.get("started_on") != row["effective_on"]:
-            past_rows.append(
-                {
-                    **prev,
-                    "post_id": pid,
-                    "ended_on": row["effective_on"],
-                    "end_change_type": "replaced",
-                    "is_current": 0,
-                }
+            _append_past_row(
+                past_rows,
+                prev,
+                post_id=pid,
+                ended_on=row["effective_on"],
+                end_change_type="replaced",
+                is_current=0,
             )
         open_tenures[name] = {
             "person_name": name,
@@ -308,8 +368,14 @@ def search_org_posts(
         params.extend(codes)
 
     if dept_q:
-        where.append("(p.department = ? OR p.department LIKE ?)")
-        params.extend([dept_q, f"%{dept_q}%"])
+        # Stored keys look like 「武隆区 · 白马税务所」; clean_department_name strips
+        # spaces so equality/LIKE on the cleaned form misses. Compare compacted.
+        where.append(
+            "(replace(replace(p.department, ' ', ''), '　', '') = ? "
+            "OR replace(replace(p.department, ' ', ''), '　', '') LIKE ?)"
+        )
+        compact = _dept_compact(dept_q)
+        params.extend([compact, f"%{compact}%"])
     if title_q:
         where.append("p.title LIKE ?")
         params.append(f"%{title_q}%")
@@ -407,24 +473,54 @@ def post_archive_from_db(
     title_q = (title or "").strip()
     if not bureau_code or not dept_q:
         raise ValueError("bureau_code and department are required")
+    dept_compact = _dept_compact(dept_q)
 
     if title_q:
         post_rows = conn.execute(
             """
             SELECT * FROM org_posts
-            WHERE bureau_code = ? AND department = ? AND title LIKE ?
+            WHERE bureau_code = ?
+              AND (
+                replace(replace(department, ' ', ''), '　', '') = ?
+                OR replace(replace(department, ' ', ''), '　', '') LIKE ?
+              )
+              AND (title = ? OR (title LIKE ? AND title NOT LIKE ?))
             """,
-            (bureau_code, dept_q, f"%{title_q}%"),
+            (
+                bureau_code,
+                dept_compact,
+                f"%{dept_compact}%",
+                title_q,
+                f"%{title_q}%",
+                f"%副{title_q}%",
+            ),
         ).fetchall()
+        if len(post_rows) > 1:
+            exact = [
+                r
+                for r in post_rows
+                if _dept_compact(r["department"]) == dept_compact
+                and (r["title"] or "") == title_q
+            ]
+            if exact:
+                post_rows = exact
+            else:
+                exact_title = [r for r in post_rows if (r["title"] or "") == title_q]
+                if exact_title:
+                    post_rows = exact_title
     else:
         # department match: exact cleaned dept OR department contains query (legacy soft match)
         post_rows = conn.execute(
             """
             SELECT * FROM org_posts
             WHERE bureau_code = ?
-              AND (department = ? OR department LIKE ? OR ? LIKE '%' || department || '%')
+              AND (
+                replace(replace(department, ' ', ''), '　', '') = ?
+                OR replace(replace(department, ' ', ''), '　', '') LIKE ?
+                OR ? LIKE '%' || replace(replace(department, ' ', ''), '　', '') || '%'
+              )
             """,
-            (bureau_code, dept_q, f"%{dept_q}%", dept_q),
+            (bureau_code, dept_compact, f"%{dept_compact}%", dept_compact),
         ).fetchall()
 
     if not post_rows:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from tax_platform.config.sites import ALL_SITES, get_site
+from tax_platform.config.sites import ALL_SITES, get_site, list_sites
 from tax_platform.normalize.title import normalize_title
 
 HQ_CATEGORIES = {
@@ -188,6 +188,46 @@ def infer_unit_category(bureau_code: str, current: dict | None = None) -> str:
     if level == "province":
         return "province"
     return ""
+
+
+def bureau_codes_for_category(
+    *,
+    org_level: str | None = None,
+    unit_category: str | None = None,
+) -> list[str] | None:
+    """Bureau codes matching region filters.
+
+    Returns ``None`` when no category restriction applies.
+    Empty list means no sites match.
+    Includes city/district children under a matching province parent
+    (e.g. 直辖市 → 上海区县).
+    """
+    cat = (unit_category or "").strip()
+    if not cat:
+        return None
+    level_q = (org_level or "").strip() or None
+
+    if cat in HQ_CATEGORIES:
+        if level_q and level_q != "headquarters":
+            return []
+        return ["sta"]
+
+    sites = list_sites()
+    by_code = {s.code: s for s in sites}
+    out: list[str] = []
+    for site in sites:
+        if level_q and site.level != level_q:
+            continue
+        if site.level == "headquarters":
+            continue
+        own = infer_unit_category(site.code)
+        if own == cat:
+            out.append(site.code)
+            continue
+        parent = by_code.get(site.parent_code or "")
+        if parent and infer_unit_category(parent.code) == cat:
+            out.append(site.code)
+    return out
 
 
 def unit_display(bureau_code: str, current: dict | None = None) -> str:

@@ -64,6 +64,29 @@ SKIP_NAMES = frozenset(
         # Leader-page chrome / duty-line fragments.
         "局长信箱",
         "负责党委",
+        # 信息公开 / xxgk 左侧栏目误当人名（黑龙江地市等 col 站）。
+        "政策法规",
+        "政策解读",
+        "新闻宣传",
+        "权责清单",
+        "行政检查",
+        "政府采购",
+        "二维码",
+        "我要申请",
+        "申请须知",
+        "隐私声明",
+        "中标公告",
+        "招标公告",
+        "文件解读",
+        "预算决算",
+        "最新文件",
+        "采购意向",
+        "执法公示",
+        "网站建议",
+        # 职务名误当人名。
+        "总经济师",
+        "总会计师",
+        "总审计师",
     }
 )
 
@@ -96,6 +119,12 @@ _BAD_SUFFIX = (
     "州",
     "税",
     "频道",
+    "公告",
+    "须知",
+    "声明",
+    "文件",
+    "解读",
+    "清单",
 )
 # Fragments of department / org names mis-parsed as person names (e.g. 财产和行为税处).
 _DEPT_NAME_MARKERS = (
@@ -124,6 +153,34 @@ _DEPT_NAME_MARKERS = (
     "专栏",
     "更多",
     "频道",
+)
+# 信息公开栏目 / 站务文案碎片（2–4 字恰好命中人名正则）。
+_SITE_CHROME_MARKERS = (
+    "法规",
+    "解读",
+    "宣传",
+    "清单",
+    "公开",
+    "指南",
+    "须知",
+    "声明",
+    "预算",
+    "决算",
+    "采购",
+    "招标",
+    "中标",
+    "二维码",
+    "权责",
+    "隐私",
+    "检查",
+    "意向",
+    "经济师",
+    "会计师",
+    "审计师",
+    "申请",
+    "公示",
+    "建议",
+    "公告",
 )
 # Appointment-clause verb/boilerplate glued into 「X任Y / X为Y」 false names
 # (e.g. 东不再担、正式任用、芳同志担、张帆挂职).
@@ -177,6 +234,8 @@ def is_plausible_person_name(name: str | None) -> bool:
     if text.endswith("地区"):
         return False
     if any(marker in text for marker in _DEPT_NAME_MARKERS):
+        return False
+    if any(marker in text for marker in _SITE_CHROME_MARKERS):
         return False
     if any(marker in text for marker in _APPOINT_BOILERPLATE_MARKERS):
         return False

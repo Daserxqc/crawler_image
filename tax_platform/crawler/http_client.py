@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
+import socket
+import subprocess
+import tempfile
 import time
+import urllib.request
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -142,9 +149,126 @@ def _html_looks_useful(html: str) -> bool:
     stripped = html.replace(" ", "").replace("\n", "").lower()
     if stripped in {"<html><head></head><body></body></html>", "<html><body></body></html>"}:
         return False
+    if "chrome-error://" in html or "chromewebdata" in stripped:
+        return False
     if any(marker in html for marker in _REAL_CONTENT_MARKERS) and len(html) >= 2_500:
         return True
     return len(html) > 12_000 and "$_ts" not in html[:3000]
+
+
+def _find_system_chrome() -> Path | None:
+    """Locate a real Chrome/Edge binary for CDP fallback."""
+    candidates = [
+        Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+        / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
+        / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+        / "Microsoft/Edge/Application/msedge.exe",
+    ]
+    for path in candidates:
+        if path and path.is_file():
+            return path
+    return None
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _fetch_html_system_chrome_cdp(
+    url: str,
+    *,
+    timeout: int = 60,
+    wait_ms: int = 25_000,
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Last-resort fetch via system Chrome + CDP.
+
+    Playwright ``launch(headless=…)`` is fingerprint-blocked on some Ruishu
+    list pages (e.g. Beijing). Connecting to a real Chrome process over CDP
+    can still pass. Uses a temporary profile and closes Chrome afterwards.
+    May briefly show a Chrome window.
+    """
+    from playwright.sync_api import sync_playwright
+
+    chrome = _find_system_chrome()
+    if chrome is None:
+        raise RuntimeError("system Chrome/Edge not found for CDP fallback")
+
+    port = _free_port()
+    profile = Path(tempfile.mkdtemp(prefix="tax_chrome_cdp_"))
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            [
+                str(chrome),
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={profile}",
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-popup-blocking",
+                "--window-size=1366,768",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/json/version", timeout=1
+                ) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.3)
+        else:
+            raise RuntimeError(f"Chrome CDP port {port} did not become ready")
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            except Exception as exc:  # noqa: BLE001
+                logging.debug("system-chrome CDP goto: %s", exc)
+
+            html = ""
+            final_url = url
+            end = time.time() + max(wait_ms / 1000.0, 8.0)
+            while time.time() < end:
+                try:
+                    html = page.content()
+                    final_url = page.url
+                except Exception:  # noqa: BLE001
+                    html = ""
+                if _html_looks_useful(html) and not str(final_url).startswith("chrome-"):
+                    break
+                time.sleep(0.8)
+
+            if not _html_looks_useful(html) or str(final_url).startswith("chrome-"):
+                raise RuntimeError(
+                    f"system-chrome CDP still challenge/empty ({len(html)} bytes) url={final_url}"
+                )
+            cookies = context.cookies()
+            logging.info(
+                "Browser fetch OK via system-chrome CDP (%s bytes)", len(html)
+            )
+            return final_url, html, cookies
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                proc.kill()
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 def apply_browser_cookies(session: requests.Session, cookies: list[dict[str, Any]]) -> None:
@@ -173,18 +297,184 @@ def _apply_playwright_stealth(context: Any, page: Any) -> None:
         pass
 
 
-def _fetch_html_drission(url: str, *, timeout: int = 60, wait_ms: int = 20_000) -> tuple[str, str, list[dict[str, Any]]]:
-    """Optional Ruishu-oriented fallback using system Chrome via DrissionPage."""
+_XXGK_INPAGE_SEARCH_JS = r"""
+return (async () => {
+  const area = new URL(location.href).searchParams.get('vc_xxgkarea')
+    || new URL(location.href).searchParams.get('area') || '';
+  if (!area) return null;
+  const tree = await (await fetch(
+    '/module/xxgk/tree.jsp?standardXxgk=1&area=' + encodeURIComponent(area) + '&divid=div4',
+    {credentials: 'include'}
+  )).text();
+  let iid = '';
+  const re = /funclick\(\s*\\?['"]([A-Za-z0-9]+)\\?['"][^>]*>\s*([^<]{1,40})/gi;
+  let m;
+  while ((m = re.exec(tree))) {
+    const label = (m[2] || '').replace(/\s+/g, '');
+    if (label.includes('人事任免') || label.includes('干部任免') || label.includes('任免')) {
+      iid = m[1];
+      break;
+    }
+  }
+  if (!iid) iid = 'rsglrsrm';
+  const text = await (await fetch(
+    '/module/xxgk/search.jsp?divid=div4&infotypeId=' + iid
+      + '&jdid=1&area=' + encodeURIComponent(area)
+      + '&sortfield=createdatetime:0,orderid:0',
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: '',
+    }
+  )).text();
+  return {iid, html: text};
+})();
+"""
+
+
+def _drission_try_xxgk_list(page: Any, shell_html: str) -> str | None:
+    """After WAF passes, pull 人事任免 via in-page search.jsp (Jilin-style shells)."""
+    page_url = ""
+    try:
+        page_url = str(page.url or "")
+    except Exception:  # noqa: BLE001
+        page_url = ""
+    if "vc_xxgkarea=" not in page_url and "vc_xxgkarea=" not in (shell_html or ""):
+        return None
+    if "任免" in (shell_html or "") and "绿园" in (shell_html or ""):
+        # Shell DOM already has the appointment rows we care about.
+        pass
+    try:
+        data = page.run_js(_XXGK_INPAGE_SEARCH_JS)
+    except Exception as exc:  # noqa: BLE001
+        logging.debug("Drission xxgk in-page search failed: %s", exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    html = data.get("html") or ""
+    if not html or "任免" not in html:
+        return None
+    if len(html) < 500:
+        return None
+    logging.info(
+        "Drission xxgk in-page search OK (iid=%s, %s bytes)",
+        data.get("iid"),
+        len(html),
+    )
+    return html
+
+
+def _drission_try_jpage_list(page: Any, shell_html: str) -> str | None:
+    """After WAF shell loads, pull jpage dataproxy list in-page (Jilin province col8211)."""
+    from tax_platform.config.list_url_normalize import prefer_http_for_legacy_ssl_hosts
+    from tax_platform.crawler.jpage import extract_jpage_html, find_dataproxy_url
+
+    if "param_" not in (shell_html or "") or "dataproxy.jsp" not in (shell_html or ""):
+        return None
+    if "任免" in (shell_html or "") and "art_" in (shell_html or ""):
+        return None
+    try:
+        page_url = prefer_http_for_legacy_ssl_hosts(str(page.url or ""))
+    except Exception:  # noqa: BLE001
+        page_url = ""
+    proxy = find_dataproxy_url(shell_html, page_url)
+    if not proxy:
+        return None
+    proxy = prefer_http_for_legacy_ssl_hosts(proxy)
+    try:
+        text = page.run_js(
+            """
+            const u = arguments[0];
+            const qs = u.split('?')[1] || '';
+            return fetch(u, {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-Requested-With': 'XMLHttpRequest',
+              },
+              body: qs,
+            }).then(r => r.text());
+            """,
+            proxy,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.debug("Drission jpage in-page dataproxy failed: %s", exc)
+        return None
+    if not isinstance(text, str) or len(text) < 500:
+        return None
+    material = extract_jpage_html(text)
+    if "任免" not in material and "art_" not in material:
+        return None
+    logging.info("Drission jpage in-page dataproxy OK (%s bytes)", len(material))
+    return material
+
+
+def _drission_try_fujian_ztree_list(page: Any, shell_html: str) -> str | None:
+    """Fujian city xxgk: zTree「人事任免」loads rsxx/rsrm list into the right pane."""
+    if "chinatax.gov.cn" not in (page.url or "") and "fujian.chinatax.gov.cn" not in (shell_html or ""):
+        # still allow when already on fujian host
+        pass
+    if "ztree" not in (shell_html or "").lower() and "zTree" not in (shell_html or ""):
+        if "主动公开" not in (shell_html or "") and "基本目录" not in (shell_html or ""):
+            return None
+    # Already has notice rows.
+    if "任免工作人员" in (shell_html or "") and re.search(r"t20\d{6}_\d+\.htm", shell_html or ""):
+        return shell_html
+    try:
+        # Prefer zTree node text; fall back to any visible 人事任免 control.
+        clicked = page.run_js(
+            """
+            const nodes = [...document.querySelectorAll('a, span, li')];
+            const hit = nodes.find(el => ((el.innerText || el.textContent || '').trim() === '人事任免'));
+            if (!hit) return false;
+            const a = hit.closest('a') || hit.querySelector('a') || hit;
+            a.click();
+            return true;
+            """
+        )
+        if not clicked:
+            return None
+    except Exception as exc:  # noqa: BLE001
+        logging.debug("fujian ztree click failed: %s", exc)
+        return None
+    deadline = time.time() + 12.0
+    html = ""
+    while time.time() < deadline:
+        time.sleep(0.6)
+        html = page.html or ""
+        if "任免工作人员" in html and re.search(r"t20\d{6}_\d+\.htm", html):
+            return html
+    return html if "任免工作人员" in html else None
+
+
+def _fetch_html_drission_once(
+    url: str,
+    *,
+    headless: bool,
+    timeout: int = 60,
+    wait_ms: int = 20_000,
+    user_data_dir: Path | None = None,
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Single DrissionPage attempt (headless or headed system Chrome)."""
     from DrissionPage import ChromiumOptions, ChromiumPage
 
     options = ChromiumOptions()
-    # Never pop a visible browser window during crawls.
-    options.headless(True)
+    options.headless(headless)
     options.set_argument("--disable-blink-features=AutomationControlled")
-    options.set_argument("--headless=new")
     options.set_argument("--window-size=1920,1080")
+    if headless:
+        options.set_argument("--headless=new")
     options.set_user_agent(DEFAULT_HEADERS["User-Agent"])
+    if user_data_dir is not None:
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+        options.set_user_data_path(str(user_data_dir))
     page = ChromiumPage(options)
+    label = "DrissionPage headed" if not headless else "DrissionPage headless"
     try:
         page.get(url, timeout=timeout)
         deadline = time.time() + max(wait_ms / 1000.0, 5.0)
@@ -196,22 +486,95 @@ def _fetch_html_drission(url: str, *, timeout: int = 60, wait_ms: int = 20_000) 
                 pass
             html = page.html or ""
             if _html_looks_useful(html):
+                # Give AJAX list a short extra window on xxgk shells.
+                if "vc_xxgkarea=" in url and "任免" not in html:
+                    time.sleep(1.0)
+                    html = page.html or ""
+                # Shanxi son/list: Vue/jQuery renders rows after shell loads.
+                if "/son/list/" in url:
+                    list_deadline = time.time() + 20.0
+                    while time.time() < list_deadline:
+                        html = page.html or ""
+                        if "son/detail/" in html and "任免" in html:
+                            break
+                        if 'id="wzList"' in html and re.search(
+                            r'son/detail/[^"\']+', html
+                        ):
+                            break
+                        time.sleep(0.8)
                 break
             time.sleep(0.8)
+        if not _html_looks_useful(html):
+            raise RuntimeError(f"{label} still challenge/empty ({len(html)} bytes)")
+
+        xxgk_html = _drission_try_xxgk_list(page, html)
+        if xxgk_html:
+            html = xxgk_html
+        else:
+            jpage_html = _drission_try_jpage_list(page, html)
+            if jpage_html:
+                html = jpage_html
+        if "/son/list/" in (page.url or url) and "son/detail/" not in html:
+            from tax_platform.crawler.shanxi_son_list import _drission_try_shanxi_son_list
+
+            sx_html = _drission_try_shanxi_son_list(page, html)
+            if sx_html:
+                html = sx_html
+        # Fujian: jgsz shell + zTree「人事任免」→ rsxx list rows.
+        if (
+            "fujian.chinatax.gov.cn" in (page.url or url)
+            and "任免工作人员" not in html
+            and ("/zfxxgkml/" in (page.url or url) or "ztree" in html.lower())
+        ):
+            fj_html = _drission_try_fujian_ztree_list(page, html)
+            if fj_html:
+                html = fj_html
+
         cookies_raw = page.cookies(all_domains=True) or []
         cookies: list[dict[str, Any]] = []
         for item in cookies_raw:
             if isinstance(item, dict) and item.get("name"):
                 cookies.append(item)
-        if not _html_looks_useful(html):
-            raise RuntimeError(f"DrissionPage still challenge/empty ({len(html)} bytes)")
-        logging.info("Browser fetch OK via DrissionPage (%s bytes)", len(html))
+        logging.info("Browser fetch OK via %s (%s bytes)", label, len(html))
         return page.url or url, html, cookies
     finally:
         try:
             page.quit()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _fetch_html_drission(url: str, *, timeout: int = 60, wait_ms: int = 20_000) -> tuple[str, str, list[dict[str, Any]]]:
+    """Ruishu fallback via system Chrome (DrissionPage).
+
+    Headless is tried first (no window). Some provinces (e.g. Jilin) blank
+    headless Playwright/Drission but succeed with a brief headed Chrome window
+    — same spirit as system-Chrome CDP for Beijing.
+    """
+    profile_root = Path(__file__).resolve().parents[2] / "output"
+    errors: list[str] = []
+    try:
+        return _fetch_html_drission_once(
+            url,
+            headless=True,
+            timeout=timeout,
+            wait_ms=min(wait_ms, 12_000),
+            user_data_dir=profile_root / ".chrome_drission_headless",
+        )
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"headless: {exc}")
+
+    try:
+        return _fetch_html_drission_once(
+            url,
+            headless=False,
+            timeout=timeout,
+            wait_ms=wait_ms,
+            user_data_dir=profile_root / ".chrome_drission_headed",
+        )
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"headed: {exc}")
+        raise RuntimeError("DrissionPage failed\n" + "\n".join(errors)) from exc
 
 
 def fetch_html_browser(
@@ -225,10 +588,24 @@ def fetch_html_browser(
 
     Returns ``(final_url, html, cookies)``.
 
-    Always headless (no visible windows). Blank pages mean WAF detected
-    automation — not a broken Playwright install. Tries Chrome channel + stealth,
-    Firefox, bundled Chromium, then DrissionPage.
+    Prefers headless Playwright. Blank pages mean WAF detected automation —
+    not a broken install. Falls back to DrissionPage (headless, then a brief
+    headed system-Chrome window for sites like Jilin), then system-Chrome CDP.
     """
+    # Shanxi son/list: AJAX list after shell; Playwright returns empty nav shell.
+    if "/son/list/" in url:
+        try:
+            return _fetch_html_drission(url, timeout=timeout, wait_ms=wait_ms)
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("son/list Drission fast-path failed for %s: %s", url, exc)
+
+    # Fujian city 主动公开目录: zTree click needed; Playwright often returns shell only.
+    if "fujian.chinatax.gov.cn" in url and "/zfxxgkml/" in url:
+        try:
+            return _fetch_html_drission(url, timeout=timeout, wait_ms=max(wait_ms, 20_000))
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("fujian zfxxgkml Drission fast-path failed for %s: %s", url, exc)
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -353,6 +730,37 @@ def fetch_html_browser(
                 if not _html_looks_useful(html) and doc_bodies:
                     html = _decode_bytes(max(doc_bodies, key=len))
 
+                # Fujian 主动公开目录: zTree「人事任免」loads rsxx/rsrm rows into the pane.
+                if (
+                    _html_looks_useful(html)
+                    and "fujian.chinatax.gov.cn" in (final_url or url)
+                    and "/zfxxgkml/" in (final_url or url)
+                    and "任免工作人员" not in html
+                ):
+                    try:
+                        page.evaluate(
+                            """() => {
+                              const nodes = [...document.querySelectorAll('a, span, li')];
+                              const hit = nodes.find(el =>
+                                ((el.innerText || el.textContent || '').trim() === '人事任免'));
+                              if (!hit) return false;
+                              const a = hit.closest('a') || hit.querySelector('a') || hit;
+                              a.click();
+                              return true;
+                            }"""
+                        )
+                        click_deadline = time.time() + 12.0
+                        while time.time() < click_deadline:
+                            page.wait_for_timeout(700)
+                            html = page.content()
+                            final_url = page.url
+                            if "任免工作人员" in html and re.search(
+                                r"t20\d{6}_\d+\.htm", html
+                            ):
+                                break
+                    except Exception as exc:  # noqa: BLE001
+                        logging.debug("fujian playwright ztree click: %s", exc)
+
                 cookies = context.cookies()
                 if _html_looks_useful(html):
                     logging.info("Browser fetch OK via %s (%s bytes)", label, len(html))
@@ -376,6 +784,12 @@ def fetch_html_browser(
         return _fetch_html_drission(url, timeout=timeout, wait_ms=wait_ms)
     except Exception as exc:  # noqa: BLE001
         errors.append(f"DrissionPage: {exc}")
+
+    # Beijing-style Ruishu: Playwright launch stays blank; real Chrome CDP works.
+    try:
+        return _fetch_html_system_chrome_cdp(url, timeout=timeout, wait_ms=wait_ms)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"system-chrome CDP: {exc}")
 
     raise RuntimeError(f"Browser fetch failed for {url}\n" + "\n".join(errors))
 

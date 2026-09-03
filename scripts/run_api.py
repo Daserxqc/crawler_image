@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0", help="Listen address (0.0.0.0 = LAN)")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args()
@@ -22,6 +22,10 @@ def main() -> None:
         import uvicorn
     except ImportError as exc:
         raise SystemExit("请先安装依赖: pip install fastapi uvicorn openpyxl") from exc
+
+    if args.host in {"0.0.0.0", "::"}:
+        print(f"Listening on all interfaces — LAN URL: http://<本机局域网IP>:{args.port}/")
+        print("本机也可打开: http://127.0.0.1:{}/".format(args.port))
 
     uvicorn.run(
         "tax_platform.web.app:app",

@@ -21,9 +21,12 @@
   }
 
   function buildSearchHref() {
+    // Prefer the exact filter state from the list page — never invent a 科室 filter
+    // from the post being viewed.
+    const ret = (params.get("ret") || "").trim();
+    if (ret) return `/posts?${ret}`;
     const url = new URL("/posts", window.location.origin);
     if (bureauCode) url.searchParams.set("bureau_code", bureauCode);
-    if (department) url.searchParams.set("department", department);
     if (title) url.searchParams.set("title", title);
     return `${url.pathname}${url.search}`;
   }
@@ -64,34 +67,41 @@
     });
   }
 
+  function renderTenureRow(row, { ended = false } = {}) {
+    const dates = ended
+      ? `${escapeHtml(row.since || "—")} → ${escapeHtml(row.ended_on || "—")}`
+      : `自 ${escapeHtml(row.since || "—")}`;
+    const source = row.source_url
+      ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">原文</a>`
+      : "";
+    return `<li class="post-tenure-row">
+      <div class="post-tenure-main">${personLink(bureauCode, row.person_name)} · ${escapeHtml(row.title || "")}</div>
+      <div class="muted post-tenure-meta">${dates} ${source}</div>
+    </li>`;
+  }
+
   function renderArchive(data) {
     const incumbents = (data.incumbents || [])
-      .map(
-        (row) =>
-          `<li>${personLink(bureauCode, row.person_name)}
-            <span class="muted">${escapeHtml(row.title || "")} · 自 ${escapeHtml(row.since || "—")}</span>
-            ${row.source_url ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">原文</a>` : ""}
-          </li>`
-      )
+      .map((row) => renderTenureRow(row))
       .join("");
     const past = (data.past || [])
-      .map(
-        (row) =>
-          `<li>${personLink(bureauCode, row.person_name)} · ${escapeHtml(row.title || "")}
-            <span class="muted">${escapeHtml(row.since || "—")} → ${escapeHtml(row.ended_on || "—")}</span>
-            ${row.source_url ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">原文</a>` : ""}
-          </li>`
-      )
+      .map((row) => renderTenureRow(row, { ended: true }))
       .join("");
     const history = (data.history || [])
-      .map(
-        (row) =>
-          `<li><time>${escapeHtml(row.effective_on || "—")}</time> ${personLink(bureauCode, row.person_name)}
-            · ${escapeHtml(changeLabel(row.change_type || row.action))}
-            · ${escapeHtml(row.title || "")}
-            ${row.source_url ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">原文</a>` : ""}
-          </li>`
-      )
+      .map((row) => {
+        const source = row.source_url
+          ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">原文</a>`
+          : "";
+        return `<li class="timeline-item">
+          <time class="timeline-date">${escapeHtml(row.effective_on || "—")}</time>
+          <div class="timeline-body">
+            <div class="timeline-title">
+              <strong>${personLink(bureauCode, row.person_name)} · ${escapeHtml(changeLabel(row.change_type || row.action))} · ${escapeHtml(row.title || "")}</strong>
+            </div>
+            <div class="muted">${escapeHtml(row.notice_title || "")} ${source}</div>
+          </div>
+        </li>`;
+      })
       .join("");
 
     const heading = qs("#post-view-heading");
@@ -110,11 +120,11 @@
         · 履历 ${data.history_count ?? 0}
       </div>
       <h2 class="results-group-title">现任</h2>
-      <ul>${incumbents || "<li class='muted'>暂无现任记录</li>"}</ul>
+      <ul class="post-tenure-list">${incumbents || "<li class='muted'>暂无现任记录</li>"}</ul>
       <h2 class="results-group-title">历任（已结束任期）</h2>
-      <ul>${past || "<li class='muted'>暂无</li>"}</ul>
+      <ul class="post-tenure-list">${past || "<li class='muted'>暂无</li>"}</ul>
       <h2 class="results-group-title">任免时间线</h2>
-      <ul class="timeline">${history || "<li class='muted'>暂无</li>"}</ul>
+      <ul class="timeline profile-timeline">${history || "<li class='timeline-item'><div class='muted'>暂无</div></li>"}</ul>
     `;
   }
 

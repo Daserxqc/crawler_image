@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -53,10 +53,19 @@
             <label for="name">人员姓名</label>
             <input id="name" name="name" type="search" placeholder="输入姓名，留空表示不限" autocomplete="off" />
           </div>
+          <div class="field">
+            <label for="date_from">任职日起</label>
+            <input id="date_from" name="date_from" type="date" />
+          </div>
+          <div class="field">
+            <label for="date_to">任职日止</label>
+            <input id="date_to" name="date_to" type="date" />
+          </div>
           <div class="filter-actions">
             <button class="btn" type="submit" id="search-btn">查询</button>
             <button class="btn secondary" type="button" id="reset-btn">重置</button>
             <button class="btn secondary" type="button" id="export-btn">导出 CSV</button>
+            <button class="btn secondary" type="button" id="export-xlsx-btn">导出 Excel</button>
           </div>
         </form>
         <div class="watch-bar" id="search-watch-bar" hidden aria-label="关注当前地区"></div>
@@ -73,7 +82,7 @@
     </div>
   </main>
 
-  <script src="/static/js/common.js?v=17"></script>
-  <script src="/static/js/search.js?v=19"></script>
+  <script src="/static/js/common.js?v=26"></script>
+  <script src="/static/js/search.js?v=22"></script>
 </body>
 </html>

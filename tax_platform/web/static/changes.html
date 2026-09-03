@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -37,7 +37,9 @@
           </div>
           <div class="field">
             <label for="department">工作科室</label>
-            <input id="department" name="department" type="search" placeholder="可选，如 政策法规处" autocomplete="off" />
+            <select id="department" name="department">
+              <option value="">全部科室</option>
+            </select>
           </div>
           <div class="field">
             <label for="change_type">变动类型</label>
@@ -68,11 +70,12 @@
 
       <div class="results-summary" id="meta">加载中…</div>
       <div id="rows"></div>
+      <nav class="pagination" id="changes-pager" aria-label="变动流分页" hidden></nav>
       <div class="status" id="status" hidden></div>
     </div>
   </main>
 
-  <script src="/static/js/common.js?v=17"></script>
-  <script src="/static/js/changes.js?v=3"></script>
+  <script src="/static/js/common.js?v=26"></script>
+  <script src="/static/js/changes.js?v=8"></script>
 </body>
 </html>

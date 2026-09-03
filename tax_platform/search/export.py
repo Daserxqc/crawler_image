@@ -14,7 +14,8 @@ EXPORT_HEADERS = [
     "角色",
     "现任职务",
     "现任科室",
-    "任免日期",
+    "任职起日",
+    "任职止日",
     "任免类型",
     "职务",
     "科室",
@@ -28,8 +29,11 @@ def rows_from_search_hits(hits: list[dict[str, Any]]) -> list[list[str]]:
     for hit in hits:
         current = hit.get("current") or {}
         roles = "、".join(hit.get("roles") or [])
-        appointments = hit.get("appointments") or []
-        if not appointments:
+        profile = hit.get("profile") or {}
+        history = profile.get("history") if isinstance(profile, dict) else None
+        # Prefer enriched history (任职起/止); fall back to raw appointment rows.
+        events = history if history else (hit.get("appointments") or [])
+        if not events:
             rows.append(
                 [
                     hit.get("name") or "",
@@ -38,6 +42,7 @@ def rows_from_search_hits(hits: list[dict[str, Any]]) -> list[list[str]]:
                     roles,
                     str(current.get("title") or ""),
                     str(current.get("department") or ""),
+                    "",
                     "",
                     "",
                     "",
@@ -47,7 +52,7 @@ def rows_from_search_hits(hits: list[dict[str, Any]]) -> list[list[str]]:
                 ]
             )
             continue
-        for ev in appointments:
+        for ev in events:
             rows.append(
                 [
                     hit.get("name") or "",
@@ -56,10 +61,11 @@ def rows_from_search_hits(hits: list[dict[str, Any]]) -> list[list[str]]:
                     roles,
                     str(current.get("title") or ""),
                     str(current.get("department") or ""),
-                    str(ev.get("effective_on") or ""),
-                    str(ev.get("action") or ""),
-                    str(ev.get("title_raw") or ""),
-                    str(ev.get("department_raw") or ""),
+                    str(ev.get("started_on") or ev.get("effective_on") or ev.get("date") or ""),
+                    str(ev.get("ended_on") or ""),
+                    str(ev.get("change_type") or ev.get("action") or ""),
+                    str(ev.get("title") or ev.get("title_raw") or ""),
+                    str(ev.get("department") or ev.get("department_raw") or ""),
                     str(ev.get("notice_title") or ""),
                     str(ev.get("source_url") or ""),
                 ]
@@ -79,7 +85,8 @@ def rows_from_profile(profile: dict[str, Any]) -> list[list[str]]:
                 "现任" if current.get("is_current") else "",
                 str(current.get("title") or ""),
                 str(current.get("department") or ""),
-                str(ev.get("date") or ""),
+                str(ev.get("started_on") or ev.get("date") or ""),
+                str(ev.get("ended_on") or ""),
                 str(ev.get("change_type") or ""),
                 str(ev.get("title") or ""),
                 str(ev.get("department") or ""),

@@ -1,0 +1,68 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>最新公告 · 税局人事检索</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css?v=42" />
+</head>
+<body class="app" data-page="notices">
+  <header class="app-header" id="app-header"></header>
+  <main class="app-main">
+    <div class="shell">
+      <section class="panel-card" aria-labelledby="notices-heading">
+        <h1 class="panel-heading" id="notices-heading">最新任免公告</h1>
+        <p class="muted panel-lead">默认展示近 90 天任免公告，可按地区 / 关键词再筛，或改为更长时间范围。</p>
+        <form class="filter-grid" id="notices-form" autocomplete="off">
+          <div class="field">
+            <label for="date_range">时间范围</label>
+            <select id="date_range" name="date_range">
+              <option value="30">近 30 天</option>
+              <option value="90" selected>近 90 天</option>
+              <option value="180">近半年</option>
+              <option value="365">近一年</option>
+              <option value="">全部时间</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="org_level">地区层级</label>
+            <select id="org_level" name="org_level">
+              <option value="">全部层级</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="region_category">地区分类</label>
+            <select id="region_category" name="region_category">
+              <option value="">全部分类</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="bureau_code">具体地区</label>
+            <select id="bureau_code" name="bureau_code">
+              <option value="">全部地区</option>
+            </select>
+          </div>
+          <div class="field field-span-2">
+            <label for="q">关键词</label>
+            <input id="q" name="q" type="search" placeholder="标题 / 文号 / 发文机关" autocomplete="off" />
+          </div>
+          <div class="filter-actions">
+            <button class="btn" type="submit" id="notices-btn">查看</button>
+            <button class="btn secondary" type="button" id="reset-btn">重置</button>
+          </div>
+        </form>
+      </section>
+
+      <div class="results-summary" id="meta">加载中…</div>
+      <div id="rows"></div>
+      <nav class="pagination" id="notices-pager" aria-label="公告分页" hidden></nav>
+      <div class="status" id="status" hidden></div>
+    </div>
+  </main>
+  <script src="/static/js/common.js?v=26"></script>
+  <script src="/static/js/notices.js?v=8"></script>
+</body>
+</html>

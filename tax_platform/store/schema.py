@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS manual_corrections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_date ON appointment_events(effective_on);
+CREATE INDEX IF NOT EXISTS idx_events_bureau_date ON appointment_events(bureau_code, effective_on);
+CREATE INDEX IF NOT EXISTS idx_events_notice ON appointment_events(notice_id);
 CREATE INDEX IF NOT EXISTS idx_leaders_person ON leader_duties(person_name, bureau_code);
 CREATE INDEX IF NOT EXISTS idx_dept_catalog_level ON dept_catalog(org_level, canonical_name);
 CREATE INDEX IF NOT EXISTS idx_title_catalog_level ON title_catalog(org_level, canonical_title);
@@ -130,6 +132,8 @@ _PERSONS_CURRENT_COLUMNS: list[tuple[str, str]] = [
 
 
 def _dedupe_appointment_events(conn: sqlite3.Connection) -> None:
+    # Cheap URL+clause dedupe for the unique index. Semantic twins
+    # (http/https / multi-URL same day) are cleaned by repair_appointment_events.
     conn.execute(
         """
         DELETE FROM appointment_events
@@ -143,20 +147,37 @@ def _dedupe_appointment_events(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_indexes(conn: sqlite3.Connection) -> None:
-    _dedupe_appointment_events(conn)
-    conn.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_events_unique
-            ON appointment_events(source_url, person_name, action, COALESCE(raw_clause, ''))
-        """
-    )
+    existing = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+    # Dedupe only when creating the unique index for the first time — not on every connect.
+    if "idx_events_unique" not in existing:
+        _dedupe_appointment_events(conn)
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_events_unique
+                ON appointment_events(source_url, person_name, action, COALESCE(raw_clause, ''))
+            """
+        )
+    if "idx_events_notice" not in existing:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_notice ON appointment_events(notice_id)"
+        )
+    if "idx_events_bureau_date" not in existing:
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_events_bureau_date
+                ON appointment_events(bureau_code, effective_on)
+            """
+        )
     # After migrate: old DBs may lack is_current until ALTER runs.
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_persons_current
-            ON persons(is_current, bureau_code)
-        """
-    )
+    if "idx_persons_current" not in existing:
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_persons_current
+                ON persons(is_current, bureau_code)
+            """
+        )
 
 
 def _migrate_persons_current(conn: sqlite3.Connection) -> None:
@@ -166,11 +187,24 @@ def _migrate_persons_current(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE persons ADD COLUMN {name} {decl}")
 
 
-def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
+def connect(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    light: bool = False,
+) -> sqlite3.Connection:
+    """Open the main store DB.
+
+    ``light=True`` skips schema sync / identity backfill so read APIs stay
+    responsive while crawlers or long writers hold other connections.
+    """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    if light:
+        return conn
     conn.executescript(SCHEMA)
     _migrate_persons_current(conn)
     _ensure_indexes(conn)

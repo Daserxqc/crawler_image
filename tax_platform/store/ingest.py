@@ -6,6 +6,8 @@ from typing import Any
 
 from tax_platform.config.sites import get_site
 from tax_platform.crawler.appointment_list import is_appointment_list_url
+from tax_platform.crawler.notice_url import normalize_notice_source_url, notice_source_url_variants
+from tax_platform.crawler.text_clean import normalize_doc_no, normalize_notice_title
 from tax_platform.store.events import sync_events_for_source, upsert_appointment_event
 from tax_platform.store.schema import connect
 from tax_platform.store.tenure import (
@@ -46,8 +48,12 @@ def ingest_appointment_results(
             if is_appointment_list_url(url):
                 continue
             notice_id, body_changed = _upsert_notice(db, notice)
-            url = notice["source_url"]
-            events = events_by_url.pop(url, [])
+            url = normalize_notice_source_url(notice.get("source_url")) or notice["source_url"]
+            events: list[dict[str, Any]] = []
+            for candidate in notice_source_url_variants(url):
+                events.extend(events_by_url.pop(candidate, []))
+            for event in events:
+                event["source_url"] = url
             if body_changed and events:
                 stats = sync_events_for_source(
                     db,
@@ -291,10 +297,18 @@ def known_notice_urls(*, conn: sqlite3.Connection | None = None) -> set[str]:
 
 def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> tuple[int, bool]:
     """Upsert notice. Returns ``(notice_id, body_changed)``."""
-    existing = db.execute(
-        "SELECT id, raw_text FROM notices WHERE source_url = ?",
-        (notice["source_url"],),
-    ).fetchone()
+    title = normalize_notice_title(notice.get("title")) or notice.get("title")
+    doc_no = normalize_doc_no(notice.get("doc_no"))
+    source_url = normalize_notice_source_url(notice.get("source_url")) or (notice.get("source_url") or "")
+    notice = {**notice, "source_url": source_url}
+    existing = None
+    for candidate in notice_source_url_variants(source_url):
+        existing = db.execute(
+            "SELECT id, raw_text, doc_no, source_url FROM notices WHERE source_url = ?",
+            (candidate,),
+        ).fetchone()
+        if existing:
+            break
     if existing:
         nid = int(existing["id"])
         new_raw = notice.get("raw_text")
@@ -308,13 +322,16 @@ def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> tuple[int,
             body_changed = str(new_raw) != str(old_raw)
         else:
             raw_text = old_raw
+        # Prefer freshly normalized doc_no; also scrub a previously stored chrome blob.
+        stored_doc = doc_no if doc_no is not None else normalize_doc_no(existing["doc_no"])
         db.execute(
             """
             UPDATE notices SET
                 bureau_code = COALESCE(?, bureau_code),
                 title = COALESCE(?, title),
+                source_url = ?,
                 published_at = COALESCE(?, published_at),
-                doc_no = COALESCE(?, doc_no),
+                doc_no = ?,
                 issuer = COALESCE(?, issuer),
                 issued_on = COALESCE(?, issued_on),
                 raw_text = ?
@@ -322,9 +339,10 @@ def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> tuple[int,
             """,
             (
                 notice.get("bureau_code"),
-                notice.get("title"),
+                title,
+                source_url,
                 notice.get("published_at"),
-                notice.get("doc_no"),
+                stored_doc,
                 notice.get("issuer"),
                 notice.get("issued_on"),
                 raw_text,
@@ -339,10 +357,10 @@ def _upsert_notice(db: sqlite3.Connection, notice: dict[str, Any]) -> tuple[int,
         """,
         (
             notice.get("bureau_code"),
-            notice.get("title"),
-            notice.get("source_url"),
+            title,
+            source_url,
             notice.get("published_at"),
-            notice.get("doc_no"),
+            doc_no,
             notice.get("issuer"),
             notice.get("issued_on"),
             notice.get("raw_text"),

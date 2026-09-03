@@ -120,6 +120,18 @@ class ChangesAndPostsTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertGreaterEqual(r.json()["total"], 3)
 
+        muni = self.client.get(
+            "/api/changes",
+            params={"unit_category": "municipality", "limit": 20},
+        )
+        self.assertEqual(muni.status_code, 200)
+        body = muni.json()
+        self.assertGreaterEqual(body["total"], 3)
+        self.assertTrue(all(i["bureau_code"] == "shanghai" for i in body["items"]))
+
+        prov = list_changes(unit_category="province", limit=5, conn=self.conn)
+        self.assertEqual(prov["total"], 0)
+
         p = self.client.get(
             "/api/posts",
             params={"bureau_code": "shanghai", "department": "政策法规处", "title": "处长"},

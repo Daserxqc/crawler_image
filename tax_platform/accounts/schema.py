@@ -70,17 +70,56 @@ CREATE INDEX IF NOT EXISTS idx_outbox_status ON email_outbox(status, created_at)
 CREATE INDEX IF NOT EXISTS idx_login_codes_email ON login_codes(email, expires_at);
 """
 
+_USER_COLUMNS = (
+    ("username", "TEXT"),
+    ("password_hash", "TEXT"),
+    ("nickname", "TEXT"),
+    ("is_admin", "INTEGER NOT NULL DEFAULT 0"),
+    ("must_change_password", "INTEGER NOT NULL DEFAULT 0"),
+    ("invite_token", "TEXT"),
+    ("invite_password", "TEXT"),
+    ("invite_created_at", "TEXT"),
+)
+
 
 def ensure_accounts_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(ACCOUNTS_SCHEMA)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
-    if "nickname" not in cols:
-        conn.execute("ALTER TABLE users ADD COLUMN nickname TEXT")
+    for name, decl in _USER_COLUMNS:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username "
+        "ON users(username) WHERE username IS NOT NULL AND username != ''"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_invite_token "
+        "ON users(invite_token) WHERE invite_token IS NOT NULL AND invite_token != ''"
+    )
     conn.commit()
 
 
-def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    """Open store DB and ensure account tables exist."""
-    conn = store_connect(db_path)
+def connect(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    light: bool = False,
+) -> sqlite3.Connection:
+    """Open store DB and ensure account tables exist.
+
+    ``light=True`` skips heavy store migrations/sync (for login/session paths)
+    so auth stays responsive while crawlers hold other connections.
+    """
+    if light:
+        path = Path(db_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), timeout=60)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=60000")
+    else:
+        conn = store_connect(db_path)
     ensure_accounts_schema(conn)
+    from tax_platform.accounts.auth import ensure_bootstrap_admin
+
+    ensure_bootstrap_admin(conn)
     return conn

@@ -38,6 +38,46 @@ class AppointmentListTests(unittest.TestCase):
         )
 
 class AppointmentDetailTests(unittest.TestCase):
+    def test_strips_br_from_meta_title(self) -> None:
+        from tax_platform.crawler.text_clean import normalize_notice_title
+
+        raw = "国家税务总局武汉市税务局任免工作人员<br/>（2026年2月25日）"
+        self.assertEqual(
+            normalize_notice_title(raw),
+            "国家税务总局武汉市税务局任免工作人员",
+        )
+        dirty = (
+            "国家税务总局贵州省税务局任免工作人员 (2024年7月24日) "
+            "2024年07月29日 14:58:34 【字体：小 中 大】 打印本页 关闭本页"
+        )
+        self.assertEqual(
+            normalize_notice_title(dirty),
+            "国家税务总局贵州省税务局任免工作人员",
+        )
+        from tax_platform.crawler.text_clean import normalize_doc_no
+
+        self.assertEqual(normalize_doc_no("沪税任〔2026〕117号"), "沪税任〔2026〕117号")
+        self.assertIsNone(
+            normalize_doc_no(
+                "国家税务总局本溪市税务局任免工作人员（2026年8月14日） "
+                "字号：[大][中][小]微信扫一扫：分享打印本页正文下载"
+            )
+        )
+        self.assertIsNone(
+            normalize_doc_no(
+                "发布日期：发文机关：国家税务总局河南省税务局人事处有效性：有效"
+                "国家税务总局河南省税务局任免工作人员字号：[大][中][小]"
+            )
+        )
+        html = f"""
+        <html><head><meta name="ArticleTitle" content="{raw}"></head>
+        <body><div>国家税务总局武汉市税务局决定：任命张三为办公室主任；</div></body></html>
+        """
+        notice = parse_appointment_detail(html, "https://example.test/wh.html", "wuhan")
+        self.assertNotIn("<br", notice.title or "")
+        self.assertEqual(notice.title, "国家税务总局武汉市税务局任免工作人员")
+        self.assertEqual(str(notice.issued_on), "2026-02-25")
+
     def test_extracts_meta_and_body(self) -> None:
         html = (FIXTURES / "appointment_detail.html").read_text(encoding="utf-8")
         notice = parse_appointment_detail(

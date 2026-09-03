@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>账号管理 · 税局人事检索</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css?v=37" />
+</head>
+<body class="app" data-page="admin-users">
+  <header class="app-header" id="app-header"></header>
+  <main class="app-main">
+    <div class="page-wrap">
+      <header class="page-hero">
+        <p class="eyebrow">管理员</p>
+        <h1>账号管理</h1>
+        <p class="lead">一键生成邀请账号（taxuser + 随机串），复制链接发给用户即可。</p>
+      </header>
+
+      <section class="panel">
+        <h2>一键创建</h2>
+        <p class="muted">用户名形如 <code>taxusera1b2c3d4</code>，昵称形如「税务用户1234」，初始密码 12 位（6 字母 + 6 数字）。</p>
+        <div class="field" style="max-width: 32rem; margin-bottom: 1rem;">
+          <label for="public-base">对外访问地址（邀请链接用这个，不要用 127.0.0.1）</label>
+          <input id="public-base" name="public_base" type="url" placeholder="http://192.168.x.x:8000" autocomplete="off" />
+          <p class="muted" id="public-base-hint" style="margin-top: 0.35rem;"></p>
+        </div>
+        <button type="button" class="btn" id="one-click-create">一键创建邀请账号</button>
+        <p class="status" id="create-status" role="status"></p>
+        <div id="invite-result" class="invite-result" hidden></div>
+      </section>
+
+      <section class="panel">
+        <h2>全部账号 <span class="muted" id="user-count"></span></h2>
+        <div id="users-table" class="table-wrap"><p class="muted">加载中…</p></div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/js/common.js?v=22"></script>
+  <script src="/static/js/admin-users.js?v=3"></script>
+</body>
+</html>

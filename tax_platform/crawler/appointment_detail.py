@@ -8,8 +8,30 @@ from datetime import date, datetime
 from bs4 import BeautifulSoup
 
 from tax_platform.models.entities import NoticeMeta
+from tax_platform.crawler.text_clean import normalize_doc_no, normalize_notice_title, scrub_notice_title
 
-STOP_LABELS = ("发文单位", "发文日期", "发布日期", "发布时间", "索引号", "主题分类", "名称", "经研究", "决定")
+STOP_LABELS = (
+    "发文单位",
+    "发文机关",
+    "发文日期",
+    "成文日期",
+    "发布日期",
+    "发布时间",
+    "发文时间",
+    "索引号",
+    "主题分类",
+    "名称",
+    "标题",
+    "字号",
+    "字体",
+    "来源",
+    "信息来源",
+    "有效性",
+    "公开方式",
+    "浏览次数",
+    "经研究",
+    "决定",
+)
 LABEL_ISSUED_ON = re.compile(r"发文日期[:：]\s*(20\d{2}-\d{2}-\d{2})")
 LABEL_PUBLISH_DATE = re.compile(r"发布日期[:：]\s*(20\d{2}-\d{2}-\d{2})")
 LABEL_PUBLISHED = re.compile(
@@ -69,7 +91,8 @@ def resolve_issued_on(
 
 def parse_appointment_detail(html: str, source_url: str, bureau_code: str) -> NoticeMeta:
     soup = BeautifulSoup(html, "html.parser")
-    title = _page_title(soup)
+    # Keep decision date in title long enough to resolve issued_on, then strip for storage.
+    title_raw = _page_title(soup)
     text = _visible_text(soup)
     content_node = soup.select_one("#zoom, .contentmain, .TRS_Editor, .article_content, #content")
     content_text = _visible_text(content_node) if content_node is not None else ""
@@ -78,7 +101,7 @@ def parse_appointment_detail(html: str, source_url: str, bureau_code: str) -> No
     meta_pub = soup.select_one('meta[name="PubDate"]')
     meta_pubdate = str(meta_pub.get("content")) if meta_pub and meta_pub.get("content") else None
     issued_on = resolve_issued_on(
-        title=title,
+        title=title_raw,
         page_text=text,
         meta_pubdate=meta_pubdate,
         published_at=published_at,
@@ -86,7 +109,7 @@ def parse_appointment_detail(html: str, source_url: str, bureau_code: str) -> No
     if published_at is None and issued_on is not None:
         published_at = datetime.combine(issued_on, datetime.min.time())
     body_source = content_text or text
-    body = _extract_body(body_source, title)
+    body = _extract_body(body_source, title_raw)
     issuer = _value_after(text, "发文单位")
     if not issuer:
         src = soup.select_one('meta[name="ContentSource"]')
@@ -94,33 +117,49 @@ def parse_appointment_detail(html: str, source_url: str, bureau_code: str) -> No
             issuer = str(src.get("content")).strip() or None
     return NoticeMeta(
         bureau_code=bureau_code,
-        title=title,
+        title=normalize_notice_title(title_raw),
         source_url=source_url,
         published_at=published_at,
-        doc_no=_value_after(text, "文号") or _value_after(text, "发文字号"),
+        doc_no=_extract_doc_no(text),
         issuer=issuer,
         issued_on=issued_on,
         raw_text=body,
     )
 
 
+def _extract_doc_no(text: str) -> str | None:
+    """Pull a real 发文字号; never keep 字号/分享 chrome blobs."""
+    for label in ("发文字号", "文号"):
+        cleaned = normalize_doc_no(_value_after(text, label))
+        if cleaned:
+            return cleaned
+    # Some templates put the 文号 mid-line without a clean stop boundary.
+    match = re.search(
+        r"(?:发文字号|文\s*号)\s*[:：]\s*([\u4e00-\u9fa5A-Za-z0-9〔〕\[\]\d]{4,40}?号)",
+        text,
+    )
+    if match:
+        return normalize_doc_no(match.group(1))
+    return None
+
+
 def _page_title(soup: BeautifulSoup) -> str:
     for selector in ("#tit_name", "h1#tit_name", "h1.title", ".contentbox h1"):
         heading = soup.select_one(selector)
         if heading:
-            title = heading.get_text(" ", strip=True)
+            title = scrub_notice_title(heading.get_text(" ", strip=True))
             if title and "信息公开" not in title:
                 return title
     meta = soup.select_one('meta[name="ArticleTitle"]')
     if meta and meta.get("content"):
-        return str(meta.get("content")).strip()
+        return scrub_notice_title(str(meta.get("content")))
     heading = soup.select_one("h1, .title, .bt")
     if heading:
-        title = heading.get_text(" ", strip=True)
+        title = scrub_notice_title(heading.get_text(" ", strip=True))
         if title and "信息公开" not in title:
             return title
     page_title = soup.title.get_text(" ", strip=True) if soup.title else ""
-    return page_title.split("|")[0].strip()
+    return scrub_notice_title(page_title.split("|")[0])
 
 
 def _visible_text(soup: BeautifulSoup) -> str:

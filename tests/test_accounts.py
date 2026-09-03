@@ -17,6 +17,9 @@ from tax_platform.store.schema import connect
 import tax_platform.web.app as api_mod
 from tax_platform.web.app import app
 
+ADMIN_USER = "admin"
+ADMIN_PASS = "TaxHR-Admin-ChangeMe"
+
 
 class AccountsApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -42,27 +45,36 @@ class AccountsApiTests(unittest.TestCase):
         )
         self.conn.commit()
         self._orig_db = api_mod.DB_PATH
-        self._orig_dev = os.environ.get("TAX_HR_DEV_LOGIN")
-        os.environ["TAX_HR_DEV_LOGIN"] = "1"
         api_mod.DB_PATH = self.db_path
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
         api_mod.DB_PATH = self._orig_db
-        if self._orig_dev is None:
-            os.environ.pop("TAX_HR_DEV_LOGIN", None)
-        else:
-            os.environ["TAX_HR_DEV_LOGIN"] = self._orig_dev
         self.client.close()
         self.conn.close()
         self.tmp.cleanup()
 
-    def _login(self, email: str = "watcher@example.com") -> None:
-        req = self.client.post("/api/auth/request-code", json={"email": email})
-        self.assertEqual(req.status_code, 200)
-        code = req.json()["dev_code"]
-        ver = self.client.post("/api/auth/verify", json={"email": email, "code": code})
-        self.assertEqual(ver.status_code, 200)
+    def _login_admin(self) -> None:
+        ver = self.client.post(
+            "/api/auth/login",
+            json={"username": ADMIN_USER, "password": ADMIN_PASS},
+        )
+        self.assertEqual(ver.status_code, 200, ver.text)
+        self.assertTrue(ver.json()["ok"])
+
+    def _login(self, username: str = "watcher", password: str = "pass1234") -> None:
+        self._login_admin()
+        created = self.client.post(
+            "/api/admin/users",
+            json={"username": username, "default_password": password, "auto": False},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        self.client.post("/api/auth/logout")
+        ver = self.client.post(
+            "/api/auth/login",
+            json={"username": username, "password": password},
+        )
+        self.assertEqual(ver.status_code, 200, ver.text)
         self.assertTrue(ver.json()["ok"])
 
     def test_login_watch_and_notify(self) -> None:
@@ -73,16 +85,12 @@ class AccountsApiTests(unittest.TestCase):
         me = self.client.get("/api/auth/me")
         self.assertTrue(me.json()["authenticated"])
         user = me.json()["user"]
-        self.assertEqual(user["channel"], "email")
-        self.assertEqual(user["account_masked"], "w***@example.com")
-        self.assertEqual(user["display_name"], "税务用户0001")
-        self.assertEqual(user["default_nickname"], "税务用户0001")
-        self.assertFalse(user["nickname_is_custom"])
+        self.assertEqual(user["username"], "watcher")
+        self.assertEqual(user["login_method"], "账号密码")
+        self.assertTrue(user["must_change_password"])
+        self.assertEqual(user["display_name"], "watcher")
         self.assertNotIn("email", user)
         self.assertNotIn("phone", user)
-        self.assertNotIn("account", user)
-        self.assertIn("session_expires_at", user)
-        self.assertIn("last_login_at", user)
 
         add = self.client.post(
             "/api/watches",
@@ -94,12 +102,13 @@ class AccountsApiTests(unittest.TestCase):
         listed = self.client.get("/api/watches")
         self.assertEqual(listed.json()["total"], 1)
 
-        # Seed cursor then insert a newer event that should match.
         from tax_platform.accounts.schema import connect as acc_connect
 
         db = acc_connect(self.db_path)
         max_id = db.execute("SELECT MAX(id) FROM appointment_events").fetchone()[0]
-        user_id = db.execute("SELECT id FROM users").fetchone()[0]
+        user_id = db.execute(
+            "SELECT id FROM users WHERE username = ?", ("watcher",)
+        ).fetchone()[0]
         db.execute(
             """
             INSERT INTO notify_cursor (user_id, last_event_id, updated_at)
@@ -129,85 +138,67 @@ class AccountsApiTests(unittest.TestCase):
         result = run_notify_cycle(dry_run=True, conn=db)
         self.assertEqual(result["digests_queued"], 1)
         self.assertEqual(result["events_matched"], 1)
-        outbox = db.execute("SELECT status, subject FROM email_outbox").fetchone()
-        self.assertIsNotNone(outbox)
-        self.assertIn("新变动", outbox["subject"])
         db.close()
 
         out = self.client.get("/api/notify/outbox")
         self.assertEqual(out.status_code, 200)
-        items = out.json()["items"]
-        self.assertGreaterEqual(len(items), 1)
-        self.assertIn("body_preview", items[0])
+        self.assertGreaterEqual(len(out.json()["items"]), 1)
 
         redirect = self.client.get("/watches", follow_redirects=False)
         self.assertEqual(redirect.status_code, 302)
         self.assertEqual(redirect.headers.get("location"), "/account#watches")
 
-        pages = [
-            self.client.get("/login"),
-            self.client.get("/account"),
-            self.client.get("/anomalies"),
-        ]
-        for page in pages:
-            self.assertEqual(page.status_code, 200)
+        for path in ("/login", "/account", "/invite", "/admin/users"):
+            self.assertEqual(self.client.get(path).status_code, 200)
 
-    def test_update_nickname(self) -> None:
-        self._login()
-        bad = self.client.patch("/api/auth/profile", json={"nickname": "a"})
-        self.assertEqual(bad.status_code, 400)
-        ok = self.client.patch("/api/auth/profile", json={"nickname": "测试昵称"})
-        self.assertEqual(ok.status_code, 200)
-        me = self.client.get("/api/auth/me")
-        self.assertEqual(me.json()["user"]["nickname"], "测试昵称")
-        self.assertEqual(me.json()["user"]["display_name"], "测试昵称")
-        self.assertTrue(me.json()["user"]["nickname_is_custom"])
-
-        me2 = self.client.get("/api/auth/me")
-        user2 = me2.json()["user"]
-        self.assertIn("default_nickname", user2)
-        self.assertTrue(user2["display_name"])
-
-        email = "x15162608130@gmail.com"
-        req = self.client.post(
-            "/api/auth/request-code",
-            json={"channel": "email", "account": email},
+    def test_invite_and_change_password(self) -> None:
+        self._login_admin()
+        created = self.client.post(
+            "/api/admin/users",
+            json={"username": "guest01", "default_password": "initpass", "auto": False},
         )
-        self.assertEqual(req.status_code, 200, req.text)
-        self.assertEqual(req.json()["account"], email.lower())
-        code = req.json()["dev_code"]
-        ver = self.client.post(
-            "/api/auth/verify",
-            json={"channel": "email", "account": email, "code": code},
-        )
-        self.assertEqual(ver.status_code, 200, ver.text)
+        self.assertEqual(created.status_code, 200)
+        token = created.json()["invite_token"]
+        inv = self.client.get("/api/auth/invite", params={"token": token})
+        self.assertEqual(inv.status_code, 200)
+        self.assertEqual(inv.json()["username"], "guest01")
+        self.assertEqual(inv.json()["default_password"], "initpass")
 
         self.client.post("/api/auth/logout")
-        phone = "13800138000"
-        req2 = self.client.post(
-            "/api/auth/request-code",
-            json={"channel": "phone", "account": phone},
+        login = self.client.post(
+            "/api/auth/login",
+            json={"username": "guest01", "password": "initpass"},
         )
-        self.assertEqual(req2.status_code, 200, req2.text)
-        self.assertEqual(req2.json()["phone"], phone)
-        ver2 = self.client.post(
-            "/api/auth/verify",
-            json={"channel": "phone", "account": phone, "code": req2.json()["dev_code"]},
-        )
-        self.assertEqual(ver2.status_code, 200, ver2.text)
-        me = self.client.get("/api/auth/me")
-        self.assertTrue(me.json()["authenticated"])
-        self.assertEqual(me.json()["user"]["phone_masked"], "138****8000")
-        self.assertEqual(me.json()["user"]["channel"], "phone")
-        self.assertNotIn("phone", me.json()["user"])
+        self.assertEqual(login.status_code, 200)
+        self.assertTrue(login.json()["user"]["must_change_password"])
 
-    def test_phone_mistaken_as_email_still_works(self) -> None:
-        """If client forgets channel=phone, 11-digit account must not yield 邮箱格式不正确."""
-        phone = "15162608130"
-        req = self.client.post(
-            "/api/auth/request-code",
-            json={"channel": "email", "account": phone},
+        changed = self.client.post(
+            "/api/auth/change-password",
+            json={"new_password": "newpass1"},
         )
-        self.assertEqual(req.status_code, 200, req.text)
-        self.assertEqual(req.json()["channel"], "phone")
-        self.assertEqual(req.json()["phone"], phone)
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertFalse(changed.json()["user"]["must_change_password"])
+
+        nick = self.client.patch("/api/auth/profile", json={"nickname": "测试昵称"})
+        self.assertEqual(nick.status_code, 200)
+        me = self.client.get("/api/auth/me")
+        self.assertEqual(me.json()["user"]["nickname"], "测试昵称")
+
+    def test_otp_endpoints_disabled(self) -> None:
+        req = self.client.post("/api/auth/request-code", json={"email": "a@b.com"})
+        self.assertEqual(req.status_code, 400)
+
+    def test_one_click_auto_user(self) -> None:
+        self._login_admin()
+        created = self.client.post("/api/admin/users", json={"auto": True})
+        self.assertEqual(created.status_code, 200, created.text)
+        data = created.json()
+        self.assertTrue(data["username"].startswith("taxuser"))
+        nick = data["nickname"] or ""
+        self.assertTrue(nick.startswith("\u7a0e\u52a1\u7528\u6237"))  # 税务用户
+        self.assertRegex(nick, r"^\u7a0e\u52a1\u7528\u6237\d{4}$")
+        self.assertEqual(len(data["default_password"]), 12)
+        letters = sum(c.isalpha() for c in data["default_password"])
+        digits = sum(c.isdigit() for c in data["default_password"])
+        self.assertEqual(letters, 6)
+        self.assertEqual(digits, 6)

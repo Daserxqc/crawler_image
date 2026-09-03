@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from tax_platform.config.bureau_site import BureauSite
+from tax_platform.config.list_url_normalize import is_html_file_path, normalize_list_url
 
 DEFAULT_CITY_REGISTRY = Path("output/city_sites_registry.json")
 
@@ -45,8 +46,8 @@ def merge_city_entries(
 
 def entry_to_bureau_site(entry: dict[str, Any]) -> BureauSite | None:
     code = (entry.get("code") or "").strip()
-    appt = (entry.get("appointment_list_url") or "").strip()
-    leader = (entry.get("leader_intro_url") or "").strip()
+    appt = normalize_list_url((entry.get("appointment_list_url") or "").strip())
+    leader = normalize_list_url((entry.get("leader_intro_url") or "").strip())
     home = (entry.get("home_url") or "").strip()
     if not code:
         return None
@@ -61,9 +62,10 @@ def entry_to_bureau_site(entry: dict[str, Any]) -> BureauSite | None:
             home = seed
         else:
             home = seed
-    if appt and "?" not in appt and not appt.endswith("/") and "index.html" not in appt:
+    # Directory-style paths need trailing slash; *.html files must not get one.
+    if appt and "?" not in appt and not appt.endswith("/") and not is_html_file_path(appt):
         appt = appt + "/"
-    if leader and "?" not in leader and not leader.endswith("/") and "index.html" not in leader:
+    if leader and "?" not in leader and not leader.endswith("/") and not is_html_file_path(leader):
         leader = leader + "/"
     if not leader and appt:
         leader = appt

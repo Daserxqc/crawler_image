@@ -155,6 +155,8 @@ def enrich_history_rows(
         )
         item = {
             "date": data.get("effective_on"),
+            "started_on": data.get("effective_on") if change.value in _APPOINT_TYPES else None,
+            "ended_on": None,
             "level": level_label,
             "unit": data.get("bureau_name"),
             "bureau_code": data.get("bureau_code") or bureau_code,
@@ -170,6 +172,26 @@ def enrich_history_rows(
         if change.value not in _LEAVE_TYPES:
             prev_title = data.get("title_raw") or prev_title
             prev_dept = data.get("department_raw") or prev_dept
+
+    # Fill ended_on for appoint spans from later leave events (chronological order).
+    open_idx: list[int] = []
+    for i, item in enumerate(materialized):
+        ctype = item.get("change_type") or ""
+        if ctype in _APPOINT_TYPES:
+            open_idx.append(i)
+            continue
+        if ctype not in _LEAVE_TYPES:
+            continue
+        still_open: list[int] = []
+        for j in open_idx:
+            appoint = materialized[j]
+            if appoint.get("ended_on"):
+                continue
+            if _leave_closes(item, appoint):
+                appoint["ended_on"] = item.get("date")
+            else:
+                still_open.append(j)
+        open_idx = still_open
 
     materialized.reverse()  # newest first
     # Same calendar day: higher office first (副局长 before 科长).

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/app.css?v=28" />
+  <link rel="stylesheet" href="/static/css/app.css?v=29" />
 </head>
 <body class="app app-login" data-page="login">
   <header class="app-header" id="app-header"></header>
@@ -15,82 +15,47 @@
   <main class="app-main login-main">
     <div class="login-shell">
       <section class="login-card" aria-labelledby="login-heading">
-        <p class="login-eyebrow">账号</p>
-        <h1 class="login-title" id="login-heading">登录</h1>
+        <p class="login-eyebrow">邀请制</p>
+        <h1 class="login-title" id="login-heading">账号登录</h1>
         <p class="login-lead">
-          公开检索无需登录。登录后可关注单位/人员，并在有新任免时收到通知。
+          公开检索无需登录。账号由管理员邀请发放，使用用户名与密码登录。
         </p>
 
-        <div class="login-method-tabs" role="tablist" aria-label="登录方式">
-          <button type="button" class="login-method is-active" role="tab" aria-selected="true" data-channel="email" id="tab-email">
-            邮箱验证码
-          </button>
-          <button type="button" class="login-method" role="tab" aria-selected="false" data-channel="phone" id="tab-phone">
-            手机验证码
-          </button>
-        </div>
+        <form id="login-form" class="login-form" novalidate>
+          <div class="field">
+            <label for="username">用户名</label>
+            <input id="username" name="username" type="text" autocomplete="username" required placeholder="请输入用户名" />
+          </div>
+          <div class="field">
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="请输入密码" />
+          </div>
+          <label class="field-check">
+            <input type="checkbox" id="want-change-password" />
+            登录后立即修改密码
+          </label>
+          <p class="login-status" id="login-status" role="status" aria-live="polite"></p>
+          <button class="btn login-primary" type="submit" id="login-btn">登录</button>
+        </form>
 
-        <!-- Account step -->
-        <div id="panel-account" class="login-panel">
-          <form id="account-form" class="login-form" novalidate>
-            <div class="field" id="email-field">
-              <label for="email">邮箱地址</label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                autocomplete="username email"
-                placeholder="name@example.com"
-                aria-describedby="account-hint"
-              />
+        <div id="panel-change-password" class="login-panel" hidden>
+          <h2 class="login-subtitle">修改密码</h2>
+          <p class="field-hint" id="change-password-hint">首次登录或勾选修改时，请设置新密码。</p>
+          <form id="change-password-form" class="login-form" novalidate>
+            <div class="field" id="old-password-field">
+              <label for="old-password">当前密码</label>
+              <input id="old-password" name="old_password" type="password" autocomplete="current-password" />
             </div>
-            <div class="field" id="phone-field" hidden>
-              <label for="phone">手机号</label>
-              <input
-                id="phone"
-                name="phone"
-                type="tel"
-                inputmode="numeric"
-                autocomplete="tel"
-                maxlength="13"
-                placeholder="11 位手机号"
-                aria-describedby="account-hint"
-              />
-            </div>
-            <p class="field-hint" id="account-hint">验证码约 15 分钟内有效。</p>
-            <p class="login-status" id="account-status" role="status" aria-live="polite"></p>
-            <button class="btn login-primary" type="submit" id="send-btn">获取验证码</button>
-          </form>
-        </div>
-
-        <!-- Code step -->
-        <div id="panel-code" class="login-panel" hidden>
-          <form id="code-form" class="login-form" novalidate>
-            <p class="login-sent">
-              验证码已发送至 <strong id="sent-account"></strong>
-              <button type="button" class="link-btn" id="change-account-btn">更换</button>
-            </p>
             <div class="field">
-              <label for="code">6 位验证码</label>
-              <input
-                id="code"
-                name="code"
-                type="text"
-                inputmode="numeric"
-                pattern="\d{6}"
-                maxlength="6"
-                minlength="6"
-                required
-                autocomplete="one-time-code"
-                placeholder="······"
-                aria-describedby="code-hint"
-                spellcheck="false"
-              />
-              <p class="field-hint" id="code-hint">输入满 6 位后自动登录；约 15 分钟内有效。</p>
+              <label for="new-password">新密码</label>
+              <input id="new-password" name="new_password" type="password" autocomplete="new-password" required minlength="6" />
             </div>
-            <p class="login-status" id="code-status" role="status" aria-live="polite"></p>
-            <button class="btn login-primary" type="submit" id="verify-btn">登录</button>
-            <button class="btn secondary login-resend" type="button" id="resend-btn" disabled>重新获取</button>
+            <div class="field">
+              <label for="new-password2">确认新密码</label>
+              <input id="new-password2" name="new_password2" type="password" autocomplete="new-password" required minlength="6" />
+            </div>
+            <p class="login-status" id="change-status" role="status" aria-live="polite"></p>
+            <button class="btn login-primary" type="submit">保存并进入</button>
           </form>
         </div>
 
@@ -101,7 +66,7 @@
     </div>
   </main>
 
-  <script src="/static/js/common.js?v=17"></script>
-  <script src="/static/js/login.js?v=5"></script>
+  <script src="/static/js/common.js?v=18"></script>
+  <script src="/static/js/login.js?v=6"></script>
 </body>
 </html>

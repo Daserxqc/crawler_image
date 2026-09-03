@@ -148,12 +148,12 @@ KNOWN_PATHS: dict[str, dict[str, str]] = {
     },
     "heilongjiang": {
         "leader_intro_url": "https://heilongjiang.chinatax.gov.cn/col/col11194/index.html",
-        "appointment_list_url": "https://heilongjiang.chinatax.gov.cn/col/col11190/index.html",
+        "appointment_list_url": "http://heilongjiang.chinatax.gov.cn/col/col17418/index.html",
     },
     "shanxi": {
         "home_url": "https://shanxi.chinatax.gov.cn/",
         "leader_intro_url": "https://shanxi.chinatax.gov.cn/xxgk/leader/sx-11400",
-        "appointment_list_url": "https://shanxi.chinatax.gov.cn/web/list/sx-11400-4187",
+        "appointment_list_url": "http://shanxi.chinatax.gov.cn/son/list/sx-11400-4187",
     },
     "qinghai": {
         "home_url": "http://qinghai.chinatax.gov.cn/",
