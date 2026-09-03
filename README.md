@@ -71,6 +71,58 @@ python scripts/run_api.py
 - 用户名：`admin`（环境变量 `TAX_HR_ADMIN_USER`）
 - 密码：`TaxHR-Admin-ChangeMe`（环境变量 `TAX_HR_ADMIN_PASSWORD`）
 
+## 每周增量更新
+
+各站点默认 **7 天** 到期重爬一次（`tax_platform/config/schedule.py`，单站可设 `refresh_days`）。到期窗口记在 `output/crawl_state.json`；未到期的站会跳过，已入库的公告 URL 也会跳过。
+
+日常入口是 `crawl_due_appointments.py`：只爬到期任免列表并**直接入库**，不必再跑 `ingest_crawl.py`。
+
+### 推荐：装成 Windows 计划任务
+
+装一次后不用手跑。每天 03:30 检查一遍；电脑当时关机的话，下次开机后会补跑。
+
+```powershell
+python scripts/install_windows_crawl_task.py
+```
+
+| 项 | 值 |
+| --- | --- |
+| 任务名 | `TaxHR_AppointmentsDueCrawl` |
+| 默认时间 | 每天 03:30（`--hour` / `--minute` 可改） |
+| 执行 | `scripts/crawl_due_appointments.py --db output/tax_hr.db` |
+| 日志 | `output/crawl_due_appointments.log` |
+
+```powershell
+python scripts/install_windows_crawl_task.py --hour 6 --minute 0   # 改到 06:00
+python scripts/install_windows_crawl_task.py --remove              # 卸载
+```
+
+需本机已有 `output/tax_hr.db`，且计划任务用的 Python 能 import 本仓库（建议用当前 venv 的解释器执行安装脚本）。
+
+### 手动跑一次
+
+```powershell
+# 只爬到期站点并入库（最常用）
+python scripts/crawl_due_appointments.py --db output/tax_hr.db
+
+# 先看哪些站到期，不抓
+python scripts/crawl_due.py --kind appointments
+python scripts/crawl_due.py --kind leaders
+
+# 顺带刷新到期的领导简介
+python scripts/crawl_due_appointments.py --db output/tax_hr.db --with-leaders
+
+# 忽略 7 天窗口，全量走一遍（仍跳过库中已有 URL）
+python scripts/crawl_due_appointments.py --db output/tax_hr.db --force
+
+# 只看不写库
+python scripts/crawl_due_appointments.py --dry-run
+```
+
+入库后 Web 上即可看到新公告（`/notices`）。岗位档案默认不重建；需要时加 `--rebuild-posts`（较慢）。
+
+云主机只爬、本机入库见下方「云主机增量抓取」。
+
 ## 项目结构
 
 ```
@@ -123,13 +175,11 @@ python scripts/crawl_appointments.py --site all --due-only
 python scripts/crawl_leaders.py --site shanghai
 python scripts/crawl_leaders.py --site all --due-only
 
-# 列表头监控（新公告探测）
+# 列表头监控（新公告探测，不入库）
 python scripts/crawl_list_heads.py --site all
-
-# 到期调度
-python scripts/crawl_due.py --kind leaders
-python scripts/crawl_due_appointments.py
 ```
+
+到期巡检、计划任务见上方「每周增量更新」。
 
 ### 入库与重算
 
@@ -220,7 +270,7 @@ python scripts/cloud_sync_export.py
 python scripts/local_pull_ingest.py
 ```
 
-Windows 定时任务可参考 `scripts/install_windows_crawl_task.py`。
+本机定时巡检仍用「每周增量更新」里的计划任务；云上对应跑 `cloud_crawl_export.py`。
 
 ## 抓取注意事项
 
