@@ -3,7 +3,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-DEFAULT_DB_PATH = Path("output/tax_hr.db")
+from tax_platform.paths import default_db_path
+
+DEFAULT_DB_PATH = default_db_path()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS notices (

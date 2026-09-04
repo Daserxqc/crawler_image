@@ -6,6 +6,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -157,8 +158,35 @@ def _html_looks_useful(html: str) -> bool:
 
 
 def _find_system_chrome() -> Path | None:
-    """Locate a real Chrome/Edge binary for CDP fallback."""
+    """Locate a real Chrome/Edge/Chromium binary for CDP fallback."""
+    env = (os.environ.get("TAX_HR_CHROME") or os.environ.get("CHROME_PATH") or "").strip()
+    if env:
+        p = Path(env)
+        if p.is_file():
+            return p
+
+    which_names = (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium-browser",
+        "chromium",
+        "chrome",
+        "msedge",
+        "microsoft-edge",
+    )
+    for name in which_names:
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+
     candidates = [
+        # Linux / cloud
+        Path("/usr/bin/google-chrome-stable"),
+        Path("/usr/bin/google-chrome"),
+        Path("/usr/bin/chromium-browser"),
+        Path("/usr/bin/chromium"),
+        Path("/snap/bin/chromium"),
+        # Windows
         Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
         / "Google/Chrome/Application/chrome.exe",
         Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
@@ -171,6 +199,30 @@ def _find_system_chrome() -> Path | None:
         if path and path.is_file():
             return path
     return None
+
+
+def _linux_browser_args() -> list[str]:
+    """Args required on many headless Linux VMs (Aliyun ECS, Docker, etc.)."""
+    if sys.platform.startswith("win"):
+        return []
+    return ["--no-sandbox", "--disable-dev-shm-usage"]
+
+
+def _chromium_launch_args(*extra: str) -> list[str]:
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--headless=new",
+        *_linux_browser_args(),
+        *extra,
+    ]
+    # de-dupe preserve order
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in args:
+        if a not in seen:
+            seen.add(a)
+            out.append(a)
+    return out
 
 
 def _free_port() -> int:
@@ -202,18 +254,20 @@ def _fetch_html_system_chrome_cdp(
     profile = Path(tempfile.mkdtemp(prefix="tax_chrome_cdp_"))
     proc: subprocess.Popen[str] | None = None
     try:
+        chrome_args = [
+            str(chrome),
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-popup-blocking",
+            "--window-size=1366,768",
+            *_linux_browser_args(),
+            "about:blank",
+        ]
         proc = subprocess.Popen(
-            [
-                str(chrome),
-                f"--remote-debugging-port={port}",
-                f"--user-data-dir={profile}",
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-popup-blocking",
-                "--window-size=1366,768",
-                "about:blank",
-            ],
+            chrome_args,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -469,6 +523,8 @@ def _fetch_html_drission_once(
     options.set_argument("--window-size=1920,1080")
     if headless:
         options.set_argument("--headless=new")
+    for arg in _linux_browser_args():
+        options.set_argument(arg)
     options.set_user_agent(DEFAULT_HEADERS["User-Agent"])
     if user_data_dir is not None:
         user_data_dir.mkdir(parents=True, exist_ok=True)
@@ -551,7 +607,9 @@ def _fetch_html_drission(url: str, *, timeout: int = 60, wait_ms: int = 20_000) 
     headless Playwright/Drission but succeed with a brief headed Chrome window
     — same spirit as system-Chrome CDP for Beijing.
     """
-    profile_root = Path(__file__).resolve().parents[2] / "output"
+    from tax_platform.paths import output_dir
+
+    profile_root = output_dir()
     errors: list[str] = []
     try:
         return _fetch_html_drission_once(
@@ -625,10 +683,7 @@ def fetch_html_browser(
             {
                 "headless": use_headless,
                 "channel": "chrome",
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--headless=new",
-                ],
+                "args": _chromium_launch_args(),
             },
         ),
         ("firefox", {"headless": use_headless}),
@@ -636,10 +691,7 @@ def fetch_html_browser(
             "chromium",
             {
                 "headless": use_headless,
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--headless=new",
-                ],
+                "args": _chromium_launch_args(),
             },
         ),
     ]

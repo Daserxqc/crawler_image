@@ -235,6 +235,15 @@
       // 已选科室+职务（跨地区扫同一岗）→ 地区作主标题；否则科室职务作主标题
       const emphasizePlace = Boolean(department && title);
 
+      writeListQuery({
+        org_level: levelSelect.value,
+        unit_category: categorySelect.value,
+        bureau_code: bureauSelect.value,
+        department: deptSelect.value,
+        title: titleSelect.value,
+        offset: offset > 0 ? String(offset) : "",
+      });
+
       listEl.innerHTML = items
         .map((item) => {
           const postTitle = item.title ? item.title : "（职务未写明）";
@@ -394,8 +403,26 @@
   } else {
     Promise.all([loadLevels(), loadBureaus(), loadStaUnits()])
       .then(async () => {
-        await applyUrlParams();
-        if (params.get("department") || params.get("title") || params.get("bureau_code")) {
+        const boot = readListRestore("/posts");
+        if (boot.get("org_level")) setSelectValue(levelSelect, boot.get("org_level"));
+        await onRegionFiltersChange();
+        if (boot.get("unit_category")) {
+          setSelectValue(categorySelect, boot.get("unit_category"));
+          rebuildBureauOptions();
+        }
+        if (boot.get("bureau_code")) setSelectValue(bureauSelect, boot.get("bureau_code"));
+        await refreshFilterOptions();
+        if (boot.get("department")) setSelectValue(deptSelect, boot.get("department"));
+        if (boot.get("title")) setSelectValue(titleSelect, boot.get("title"));
+        const off = Number.parseInt(boot.get("offset") || "0", 10);
+        if (Number.isFinite(off) && off > 0) offset = off;
+        if (
+          boot.get("department") ||
+          boot.get("title") ||
+          boot.get("bureau_code") ||
+          boot.get("unit_category") ||
+          boot.get("org_level")
+        ) {
           return searchPosts();
         }
         return null;

@@ -8,8 +8,9 @@ from typing import Any
 
 from tax_platform.config.bureau_site import BureauSite
 from tax_platform.config.list_url_normalize import is_html_file_path, normalize_list_url
+from tax_platform.paths import under_output
 
-DEFAULT_CITY_REGISTRY = Path("output/city_sites_registry.json")
+DEFAULT_CITY_REGISTRY = under_output("city_sites_registry.json")
 
 
 def load_city_registry(path: Path = DEFAULT_CITY_REGISTRY) -> list[dict[str, Any]]:

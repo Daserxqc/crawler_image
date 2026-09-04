@@ -17,11 +17,12 @@
   }
 
   function handleBack() {
-    if (window.history.length > 1) {
-      window.history.back();
+    const ret = resolveListReturnUrl();
+    if (ret) {
+      window.location.assign(ret);
       return;
     }
-    window.location.href = "/";
+    window.location.href = "/departments";
   }
 
   function tenureRange(row) {
@@ -59,17 +60,12 @@
       const levelTag = profile.org_level
         ? `<span class="tag tag-level">${escapeHtml(levelLabel(profile.org_level))}</span>`
         : "";
-      const tags = (profile.tags || [])
-        .map((t) => `<span class="tag">${escapeHtml(t)}</span>`)
-        .join("");
       const deptDisplay =
         current.department ||
         (profile.org_level === "headquarters" ? "本机关" : "—");
       const history = (profile.history || [])
         .map((row) => {
-          const source = row.source_url
-            ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">公告原文</a>`
-            : "";
+          const source = row.source_url ? noticeSourceLinks(row.source_url) : "";
           return `
             <li class="timeline-item">
               <time class="timeline-date">${escapeHtml(tenureRange(row))}</time>
@@ -77,7 +73,8 @@
                 <div class="timeline-title">
                   <strong>${formatHistoryLine(row)}</strong>
                 </div>
-                <div class="muted">${escapeHtml(row.notice_title || "")} ${source}</div>
+                <div class="muted">${escapeHtml(row.notice_title || "")}</div>
+                ${source ? `<div class="timeline-sources">${source}</div>` : ""}
               </div>
             </li>
           `;
@@ -96,7 +93,7 @@
             <h1 class="profile-name">${escapeHtml(profile.name)}</h1>
             <div class="person-tags">
               ${current.is_current ? '<span class="tag tag-current">现任</span>' : '<span class="tag">非现任/未知</span>'}
-              ${levelTag}${tags}
+              ${levelTag}
             </div>
           </div>
           ${profile.leader_intro_url ? `<a class="btn secondary" href="${escapeHtml(profile.leader_intro_url)}" target="_blank" rel="noopener">领导介绍原文</a>` : ""}

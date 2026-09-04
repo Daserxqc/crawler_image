@@ -63,21 +63,29 @@ def build_current_from_history(
             open_post = None
 
     if open_post:
+        from tax_platform.search.display import (
+            sanitize_department_label,
+            sanitize_posting_unit,
+        )
+
         nt = normalize_title(open_post.get("title") or title)
-        unit = open_post.get("unit")
+        unit = sanitize_posting_unit(open_post.get("unit")) or None
         # Roster noise: event stored under district but bureau_name=国家税务总局.
         if (
             profile_bureau_code
             and profile_bureau_code != "sta"
-            and str(unit or "").strip() in {"国家税务总局", "总局"}
+            and str(unit or "").strip() in {"国家税务总局", "总局", ""}
         ):
             try:
                 unit = get_site(profile_bureau_code).name
             except KeyError:
                 pass
+        dept = sanitize_department_label(open_post.get("department")) or open_post.get(
+            "department"
+        )
         return {
             "unit": unit,
-            "department": open_post.get("department") or (departments[0] if departments else None),
+            "department": dept or (departments[0] if departments else None),
             "title": nt.canonical if nt else (open_post.get("title") or title),
             "departments": departments,
             "is_current": True,
@@ -153,14 +161,22 @@ def enrich_history_rows(
             data.get("department_raw"),
             org_level=org_level_for_bureau(level),
         )
+        from tax_platform.search.display import (
+            sanitize_department_label,
+            sanitize_posting_unit,
+        )
+
+        unit = sanitize_posting_unit(data.get("bureau_name"))
+        dept_label = dept.canonical_name if dept else data.get("department_raw")
+        dept_label = sanitize_department_label(dept_label) or dept_label
         item = {
             "date": data.get("effective_on"),
             "started_on": data.get("effective_on") if change.value in _APPOINT_TYPES else None,
             "ended_on": None,
             "level": level_label,
-            "unit": data.get("bureau_name"),
+            "unit": unit or None,
             "bureau_code": data.get("bureau_code") or bureau_code,
-            "department": dept.canonical_name if dept else data.get("department_raw"),
+            "department": dept_label,
             "title": title.canonical if title else data.get("title_raw"),
             "change_type": change.value,
             "notice_title": data.get("notice_title"),

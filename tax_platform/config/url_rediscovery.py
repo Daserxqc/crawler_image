@@ -21,6 +21,7 @@ from typing import Any
 from tax_platform.config.city_sites_io import DEFAULT_CITY_REGISTRY, load_city_registry
 from tax_platform.config.list_url_normalize import normalize_list_url
 from tax_platform.config.sites_provinces import PROVINCE_URL_OVERRIDES
+from tax_platform.paths import default_db_path
 
 # Curated fallbacks from manual ingest scripts — not guessed from the web.
 INGEST_SCRIPT_FALLBACKS: dict[str, str] = {
@@ -88,10 +89,11 @@ def _henan_city_pattern_url(code: str) -> str | None:
 def collect_url_candidates(
     code: str,
     *,
-    db_path: Path | str = "output/tax_hr.db",
+    db_path: Path | str | None = None,
     registry: list[dict[str, Any]] | None = None,
 ) -> list[UrlCandidate]:
     """Return deduped candidate URLs from stored sources only."""
+    db_path = Path(db_path) if db_path is not None else default_db_path()
     seen: set[str] = set()
     out: list[UrlCandidate] = []
 
@@ -145,9 +147,10 @@ def validate_list_url(url: str, *, timeout: int = 20) -> tuple[bool, int, str]:
 def rediscover_bureau_url(
     code: str,
     *,
-    db_path: Path | str = "output/tax_hr.db",
+    db_path: Path | str | None = None,
     registry_path: Path = DEFAULT_CITY_REGISTRY,
 ) -> RediscoveryResult:
+    db_path = Path(db_path) if db_path is not None else default_db_path()
     registry = load_city_registry(registry_path)
     result = RediscoveryResult(bureau_code=code)
     result.candidates = collect_url_candidates(code, db_path=db_path, registry=registry)

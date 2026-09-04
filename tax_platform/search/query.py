@@ -17,9 +17,11 @@ from tax_platform.normalize.title import normalize_title, org_level_sort_rank, t
 from tax_platform.normalize.person import is_plausible_person_name
 from tax_platform.search.display import (
     bureau_codes_for_category,
+    bureau_needs_posting_scope,
     enrich_hit_display,
     headquarters_org_bucket,
     headquarters_ranked_post,
+    posting_belongs_to_bureau,
 )
 from tax_platform.config.sta_units import unit_keywords
 from tax_platform.store.ingest import get_person_profile, person_id
@@ -172,9 +174,12 @@ def search_people_page(
             args.extend(allowed_bureaus)
 
         # 总局内设/直属/派出 (and specific STA units) need per-person classification;
-        # SQL COUNT of bureau_code=sta is the whole headquarters roster, not the category.
+        # city/district concrete picks need 本级 posting scope (exclude subordinate 分局).
         hq_cat = cat_q in {"internal", "direct", "dispatched"}
-        need_person_filter = hq_cat or bool((unit_code or "").strip())
+        need_posting_scope = bureau_needs_posting_scope(bureau_code)
+        need_person_filter = (
+            hq_cat or bool((unit_code or "").strip()) or need_posting_scope
+        )
         if need_person_filter:
             for row in db.execute(
                 f"SELECT bureau_code, name FROM persons WHERE {where} "
@@ -210,6 +215,8 @@ def search_people_page(
                 unit_code=unit_code,
                 unit_category=cat_q if hq_cat else None,
             )
+            if need_posting_scope and bureau_code:
+                results = _filter_posting_scope(results, bureau_code)
             total = len(results)
             current_count = sum(
                 1 for r in results if (r.get("current") or {}).get("is_current")
@@ -227,7 +234,7 @@ def search_people_page(
                 args,
             ).fetchone()[0]
         )
-        page_limit = limit if limit > 0 else min(total, 2000)
+        page_limit = limit if limit > 0 else total
         page_sql = (
             f"SELECT bureau_code, name FROM persons WHERE {where} "
             "ORDER BY bureau_code, name LIMIT ? OFFSET ?"
@@ -462,6 +469,9 @@ def search_people_page(
 
     results.sort(key=_sort_key)
     results = _apply_unit_filters(results, unit_code=unit_code, unit_category=cat_q)
+    if bureau_needs_posting_scope(bureau_code):
+        results = _filter_posting_scope(results, bureau_code or "")
+        need_heavy_filter = True
     if need_heavy_filter:
         total = len(results)
         current_count = sum(
@@ -679,9 +689,14 @@ def departments_for_leader(
     name: str,
     *,
     bureau_code: str | None = None,
+    include_tenure_fallback: bool = False,
     conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
-    """领导 → 分管科室列表。"""
+    """领导 → 分管科室列表。
+
+    By default only ``leader_duties`` (源站分管). When *include_tenure_fallback*
+    is true (反查 API), also surface任职科室 from persons if no duty rows exist.
+    """
     name = (name or "").strip()
     if not name:
         raise ValueError("name is required")
@@ -718,11 +733,53 @@ def departments_for_leader(
                 "duty_summary": row["duty_summary"],
                 "departments": [str(d) for d in deps],
                 "source_url": row["source_url"],
+                "source": "leader_duties",
+            }
+        )
+    if out or not include_tenure_fallback:
+        if owns:
+            db.close()
+        return out
+
+    # Fallback: exact person row — 任职科室, not published 分管.
+    person_sql = "SELECT bureau_code, name, title_current, department_current FROM persons WHERE name = ?"
+    person_args: list[Any] = [name]
+    if bureau_code:
+        person_sql += " AND bureau_code = ?"
+        person_args.append(bureau_code)
+    for row in db.execute(person_sql, person_args):
+        key = (row["bureau_code"], row["name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        dept = (row["department_current"] or "").strip()
+        out.append(
+            {
+                "id": person_id(row["bureau_code"], row["name"]),
+                "name": row["name"],
+                "bureau_code": row["bureau_code"],
+                "org_level": _level_of(row["bureau_code"]),
+                "title_raw": row["title_current"],
+                "duty_summary": None,
+                "departments": [dept] if dept else [],
+                "source_url": None,
+                "source": "person_tenure",
+                "note": "源站未采集分管科室；以下为任职科室",
             }
         )
     if owns:
         db.close()
     return out
+
+
+def _filter_posting_scope(
+    results: list[dict[str, Any]], bureau_code: str
+) -> list[dict[str, Any]]:
+    return [
+        r
+        for r in results
+        if posting_belongs_to_bureau(bureau_code, r.get("current"))
+    ]
 
 
 def lookup_department(

@@ -13,6 +13,7 @@ from tax_platform.crawler.crawl_state import (
     sites_due_for_crawl,
 )
 from tax_platform.models.entities import to_dict
+from tax_platform.paths import resolve_data_path
 
 
 def resolve_site_codes(
@@ -46,7 +47,7 @@ def resolve_site_codes(
 
 
 def dump_json(path: str | Path, payload: Any) -> Path:
-    out = Path(path)
+    out = resolve_data_path(path, default_name="dump.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return out.resolve()

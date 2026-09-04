@@ -9,8 +9,9 @@ from pathlib import Path
 
 from tax_platform.config.schedule import refresh_days_for
 from tax_platform.config.sites import BureauSite, list_sites
+from tax_platform.paths import under_output
 
-DEFAULT_STATE_PATH = Path("output/crawl_state.json")
+DEFAULT_STATE_PATH = under_output("crawl_state.json")
 
 
 @dataclass(frozen=True)

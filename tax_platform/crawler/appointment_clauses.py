@@ -58,8 +58,10 @@ _RANK_ONLY_RE = re.compile(
     r"^(?:[一二三四]级)?(?:高级)?(?:主办|调研员|巡视员)$"
 )
 # (?<![行无以]) avoids 「行为税 / 无为市 / 以为」里的「为」误当成任命句式。
+# Optional 「同志」 must be outside the name group — otherwise
+# 「任命周立渊同志为…」greedy-matches name=「立渊同志」→ cleaned「立渊」。
 APPOINT_AS_RE = re.compile(
-    rf"(?:(?:任命|聘任)[:：]?)*(?P<name>{NAME_RE})(?<![行无以])为(?P<post>[^；。;，,]+)"
+    rf"(?:(?:任命|聘任)[:：]?)?(?P<name>{NAME_RE})(?:同志)?(?<![行无以])为(?P<post>[^；。;，,]+)"
 )
 # 「翟盼正式任用为…」「赵湘任用为…」(prefer longer 「正式任用」 first)
 APPOINT_ZHENGSHI_RENYONG_RE = re.compile(

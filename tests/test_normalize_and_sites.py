@@ -57,6 +57,78 @@ class NormalizeTests(unittest.TestCase):
 
 
 class PostingSiteTests(unittest.TestCase):
+    def test_fenju_is_district_not_city(self) -> None:
+        from tax_platform.search.display import _posting_org_level, infer_org_level_from_unit
+
+        unit = "国家税务总局腾冲市税务局和顺税务分局"
+        self.assertEqual(infer_org_level_from_unit(unit), "district")
+        level, _ = _posting_org_level("yunnan_col3885", {"unit": unit})
+        self.assertEqual(level, "district")
+
+    def test_city_selection_excludes_subordinate_fenju(self) -> None:
+        from tax_platform.search.display import posting_belongs_to_bureau
+
+        self.assertFalse(
+            posting_belongs_to_bureau(
+                "yunnan_col3885",
+                {"unit": "国家税务总局腾冲市税务局和顺税务分局"},
+            )
+        )
+        self.assertFalse(
+            posting_belongs_to_bureau(
+                "yunnan_col3885",
+                {"unit": "国家税务总局保山市隆阳区税务局第二税务分局"},
+            )
+        )
+        self.assertFalse(
+            posting_belongs_to_bureau(
+                "yunnan_col3885",
+                {
+                    "unit": "国家税务总局施甸县税务局党委委员、副局长，免去国家税务总局保山市隆阳区税务局第二税务分局"
+                },
+            )
+        )
+        self.assertTrue(
+            posting_belongs_to_bureau(
+                "yunnan_col3885",
+                {"unit": "国家税务总局保山市税务局"},
+            )
+        )
+        self.assertTrue(
+            posting_belongs_to_bureau(
+                "yunnan_col3885",
+                {"unit": "国家税务总局保山市税务局第一税务分局"},
+            )
+        )
+        self.assertTrue(
+            posting_belongs_to_bureau(
+                "yunnan_col3885",
+                {"unit": ""},
+            )
+        )
+
+    def test_sanitize_dirty_unit_and_department(self) -> None:
+        from tax_platform.search.display import (
+            sanitize_department_label,
+            sanitize_posting_unit,
+            unit_display,
+        )
+
+        dirty = "保山市货物和劳务税科副科长（）、三级主办，免去保山市"
+        self.assertEqual(sanitize_posting_unit(dirty), "")
+        self.assertEqual(
+            unit_display("yunnan_col3885", {"unit": dirty}),
+            "保山市",
+        )
+        self.assertEqual(
+            sanitize_posting_unit("国家税务总局保山市税务局第一税务分局"),
+            "国家税务总局保山市税务局第一税务分局",
+        )
+        self.assertEqual(
+            sanitize_department_label("第一稽查局三级主办职级"),
+            "第一稽查局",
+        )
+
     def test_sta_prefix_local_bureau_is_not_headquarters(self) -> None:
         cases = [
             ("国家税务总局贵州省税务局", "guizhou", "province"),

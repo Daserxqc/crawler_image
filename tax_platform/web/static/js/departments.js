@@ -253,6 +253,9 @@
       lastBureauCode = bureauParam() || bureauSelect.value || null;
       lastDepartment = data.browse_all ? null : deptLabel;
 
+      // Sync address bar BEFORE building person links, otherwise ret 仍是上一次查询。
+      syncDeptQuery();
+
       if (meta) {
         const bits = [`科室：${deptLabel}`];
         bits.push(`分管领导 ${leaderCount} 人`);
@@ -290,7 +293,7 @@
           const id = l.id || (l.bureau_code && l.name ? `${l.bureau_code}:${l.name}` : null);
           const label = l.name || l.person_name || "—";
           const name = id
-            ? `<a href="/people/${encodeURIComponent(id)}">${escapeHtml(label)}</a>`
+            ? `<a href="${personProfileHref(id)}">${escapeHtml(label)}</a>`
             : escapeHtml(label);
           const key = id || `${l.bureau_code}:${label}`;
           const chain = hierarchyMeta(upwardByKey.get(key) || {
@@ -313,7 +316,7 @@
       const staff = staffItems
         .map((s) => {
           return `<li class="dept-hit">
-            <div class="dept-hit-name"><a href="/people/${encodeURIComponent(s.id)}">${escapeHtml(
+            <div class="dept-hit-name"><a href="${personProfileHref(s.id)}">${escapeHtml(
               s.name
             )}</a></div>
             <div class="dept-hit-meta muted">${escapeHtml(formatCurrent(s.current))} · ${escapeHtml(
@@ -405,12 +408,24 @@
     }
   }
 
+  function syncDeptQuery(extra = {}) {
+    writeListQuery({
+      org_level: levelSelect.value,
+      unit_category: categorySelect.value,
+      bureau_code: bureauSelect.value,
+      department: deptSelect.value,
+      staff_offset: staffOffset > 0 ? String(staffOffset) : "",
+      ...extra,
+    });
+  }
+
   function resetForm() {
     form.reset();
     staffOffset = 0;
     out.innerHTML = "";
     if (meta) meta.textContent = "选择科室或地区后查询；结果含分管领导与任职人员总数";
     status.hidden = true;
+    clearListQuery();
     onRegionFiltersChange().catch(() => {});
   }
 
@@ -428,39 +443,70 @@
     const btn = qs("#leader-lookup-btn");
     if (btn) btn.disabled = true;
     out.innerHTML = `<div class="status">反查中…</div>`;
+    if (meta) meta.textContent = `反查「${name}」…`;
     try {
       const data = await apiGet(`/api/leaders/${encodeURIComponent(name)}/departments`, {
         bureau_code: bureauParam(),
       });
       const items = data.items || [];
+      const dutyN = data.leader_duty_count ?? items.filter((it) => it.source === "leader_duties").length;
+      const tenureN =
+        data.tenure_fallback_count ?? items.filter((it) => it.source === "person_tenure").length;
+      if (meta) {
+        meta.textContent =
+          `反查「${name}」· 分管记录 ${dutyN} 人` +
+          (tenureN ? ` · 任职回退 ${tenureN} 人` : "") +
+          (items.length ? "" : " · 未找到");
+      }
       if (!items.length) {
         out.innerHTML = `<section class="panel-card"><p class="muted">未找到「${escapeHtml(
           name
         )}」的分管科室（源站未公布或未采集）。</p></section>`;
+        writeListQuery({
+          org_level: levelSelect.value,
+          unit_category: categorySelect.value,
+          bureau_code: bureauSelect.value,
+          leader: name,
+          mode: "leader",
+        });
         return;
       }
+      writeListQuery({
+        org_level: levelSelect.value,
+        unit_category: categorySelect.value,
+        bureau_code: bureauSelect.value,
+        leader: name,
+        mode: "leader",
+      });
       const rows = items
         .map((it) => {
           const depts = (it.departments || []).join("、") || "—";
           const bureau = bureauLabel(it.bureau_code);
           const pid = it.id || it.person_id;
           const personLink = pid
-            ? `<a href="/people/${encodeURIComponent(pid)}">${escapeHtml(it.name || name)}</a>`
+            ? `<a href="${personProfileHref(pid)}">${escapeHtml(it.name || name)}</a>`
             : escapeHtml(it.name || name);
+          const note =
+            it.source === "person_tenure"
+              ? `<div class="muted">任职科室（源站未公布分管）</div>`
+              : `<div class="muted">分管科室</div>`;
+          const title = it.title_raw ? ` · ${escapeHtml(it.title_raw)}` : "";
           return `<li class="dept-hit">
-            <div class="dept-hit-name">${personLink}</div>
+            <div class="dept-hit-name">${personLink}${title}</div>
+            ${note}
             <div class="muted">${escapeHtml(bureau)} · ${escapeHtml(depts)}</div>
           </li>`;
         })
         .join("");
       out.innerHTML = `
         <section class="panel-card" aria-label="领导分管科室">
-          <h2 class="results-group-title">「${escapeHtml(name)}」分管科室 · ${items.length}</h2>
+          <h2 class="results-group-title">「${escapeHtml(name)}」分管 / 任职科室 · ${items.length}</h2>
           <ul class="dept-hit-list">${rows}</ul>
         </section>
       `;
     } catch (err) {
       out.innerHTML = "";
+      if (meta) meta.textContent = "反查失败";
       status.hidden = false;
       status.className = "status error";
       status.textContent = err.message || String(err);
@@ -477,10 +523,40 @@
     rebuildBureauOptions();
     refreshDeptOptions().catch(() => {});
   });
-  bureauSelect.addEventListener("change", () => refreshDeptOptions().catch(() => {}));
+  bureauSelect.addEventListener("change", () => {
+    refreshDeptOptions().catch(() => {});
+  });
 
   Promise.all([loadLevels(), loadBureaus(), loadStaUnits()])
-    .then(() => onRegionFiltersChange())
+    .then(async () => {
+      const boot = readListRestore("/departments");
+      if (boot.get("org_level")) setSelectValue(levelSelect, boot.get("org_level"));
+      await onRegionFiltersChange();
+      if (boot.get("unit_category")) {
+        setSelectValue(categorySelect, boot.get("unit_category"));
+        rebuildBureauOptions();
+        await refreshDeptOptions();
+      }
+      if (boot.get("bureau_code")) setSelectValue(bureauSelect, boot.get("bureau_code"));
+      await refreshDeptOptions();
+      if (boot.get("department")) setSelectValue(deptSelect, boot.get("department"));
+      const off = Number.parseInt(boot.get("staff_offset") || "0", 10);
+      if (Number.isFinite(off) && off > 0) staffOffset = off;
+      if (boot.get("mode") === "leader" && boot.get("leader")) {
+        const nameInput = qs("#leader_name");
+        if (nameInput) nameInput.value = boot.get("leader");
+        return runLeaderLookup();
+      }
+      if (
+        boot.get("department") ||
+        boot.get("bureau_code") ||
+        boot.get("org_level") ||
+        boot.get("unit_category")
+      ) {
+        return runQuery(null);
+      }
+      return null;
+    })
     .catch((err) => {
       status.hidden = false;
       status.className = "status error";

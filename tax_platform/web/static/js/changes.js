@@ -279,15 +279,23 @@
             ? `（关注筛选后 ${items.length} 条）`
             : "";
       meta.textContent = `共 ${total} 条${pageNote}${watchNote}`;
+      writeListQuery({
+        org_level: levelSelect.value,
+        unit_category: categorySelect.value,
+        bureau_code: bureauSelect.value,
+        department: qs("#department")?.value,
+        change_type: qs("#change_type")?.value,
+        q: qs("#q")?.value,
+        offset: offset > 0 ? String(offset) : "",
+        watch_only: watchOnly?.checked ? "1" : "",
+      });
       rows.innerHTML =
         items
           .map((item) => {
-            const source = item.source_url
-              ? `<a href="${escapeHtml(item.source_url)}" target="_blank" rel="noopener">原文</a>`
-              : "";
+            const source = item.source_url ? noticeSourceLinks(item.source_url) : "";
             const personHref =
               item.bureau_code && item.person_name
-                ? `/people/${encodeURIComponent(`${item.bureau_code}:${item.person_name}`)}`
+                ? personProfileHref(`${item.bureau_code}:${item.person_name}`)
                 : null;
             const name = personHref
               ? `<a href="${personHref}">${escapeHtml(item.person_name)}</a>`
@@ -330,6 +338,7 @@
   function resetForm() {
     form.reset();
     offset = 0;
+    clearListQuery();
     onRegionFiltersChange().then(load).catch(() => load());
   }
 
@@ -361,8 +370,27 @@
   });
 
   Promise.all([loadLevels(), loadBureaus(), loadStaUnits()])
-    .then(() => onRegionFiltersChange())
-    .then(() => Promise.all([refreshWatchOnlyHint(), refreshChangesWatchBar(), load()]))
+    .then(async () => {
+      const boot = readListRestore("/changes");
+      if (boot.get("org_level")) setSelectValue(levelSelect, boot.get("org_level"));
+      await onRegionFiltersChange();
+      if (boot.get("unit_category")) {
+        setSelectValue(categorySelect, boot.get("unit_category"));
+        rebuildBureauOptions();
+      }
+      if (boot.get("bureau_code")) setSelectValue(bureauSelect, boot.get("bureau_code"));
+      if (boot.get("department") && qs("#department")) {
+        setSelectValue(qs("#department"), boot.get("department"));
+      }
+      if (boot.get("change_type") && qs("#change_type")) {
+        setSelectValue(qs("#change_type"), boot.get("change_type"));
+      }
+      if (boot.get("q") && qs("#q")) qs("#q").value = boot.get("q");
+      if (boot.get("watch_only") === "1" && watchOnly) watchOnly.checked = true;
+      const off = Number.parseInt(boot.get("offset") || "0", 10);
+      if (Number.isFinite(off) && off > 0) offset = off;
+      return Promise.all([refreshWatchOnlyHint(), refreshChangesWatchBar(), load()]);
+    })
     .catch((err) => {
       status.hidden = false;
       status.className = "status error";

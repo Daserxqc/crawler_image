@@ -17,7 +17,7 @@
 
   function personLink(code, name) {
     if (!code || !name) return escapeHtml(name || "—");
-    return `<a href="/people/${encodeURIComponent(`${code}:${name}`)}">${escapeHtml(name)}</a>`;
+    return `<a href="${personProfileHref(`${code}:${name}`)}">${escapeHtml(name)}</a>`;
   }
 
   function buildSearchHref() {
@@ -71,9 +71,7 @@
     const dates = ended
       ? `${escapeHtml(row.since || "—")} → ${escapeHtml(row.ended_on || "—")}`
       : `自 ${escapeHtml(row.since || "—")}`;
-    const source = row.source_url
-      ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">原文</a>`
-      : "";
+    const source = row.source_url ? noticeSourceLinks(row.source_url) : "";
     return `<li class="post-tenure-row">
       <div class="post-tenure-main">${personLink(bureauCode, row.person_name)} · ${escapeHtml(row.title || "")}</div>
       <div class="muted post-tenure-meta">${dates} ${source}</div>
@@ -89,9 +87,7 @@
       .join("");
     const history = (data.history || [])
       .map((row) => {
-        const source = row.source_url
-          ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">原文</a>`
-          : "";
+        const source = row.source_url ? noticeSourceLinks(row.source_url) : "";
         return `<li class="timeline-item">
           <time class="timeline-date">${escapeHtml(row.effective_on || "—")}</time>
           <div class="timeline-body">

@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_RESUME_PATH = Path("output/_resume_state.json")
+from tax_platform.paths import under_output
+
+DEFAULT_RESUME_PATH = under_output("_resume_state.json")
 
 
 def _now_iso() -> str:

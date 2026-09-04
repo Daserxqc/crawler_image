@@ -207,25 +207,62 @@
     }
   }
 
+  function isBlankMeta(value) {
+    const s = String(value || "").trim();
+    return !s || s === "—" || s === "-" || s === "–" || s === "一";
+  }
+
+  function metaItem(label, value, extraClass = "") {
+    if (isBlankMeta(value)) return "";
+    const cls = ["person-meta-item", extraClass].filter(Boolean).join(" ");
+    return `<div class="${cls}">
+      <span class="meta-k">${escapeHtml(label)}</span>
+      <span class="meta-v">${escapeHtml(value)}</span>
+    </div>`;
+  }
+
   function renderCard(hit, index) {
     const current = hit.current || {};
-    const levelTag = `<span class="tag tag-level">${escapeHtml(levelLabel(hit.org_level))}</span>`;
+    const title = hit.title_display || current.title || "";
+    const department =
+      current.department ||
+      (hit.org_level === "headquarters" ? "本机关" : "");
+    const supervised = (hit.supervised_departments || current.departments || []).join(
+      "、"
+    );
+    const unit = hit.unit_display || "";
+    const region = hit.region_display || "";
     const currentTag = current.is_current
       ? '<span class="tag tag-current">现任</span>'
       : '<span class="tag">非现任/未知</span>';
+    const levelTag = `<span class="tag tag-level">${escapeHtml(levelLabel(hit.org_level))}</span>`;
     const catTag = hit.category_label
       ? `<span class="tag tag-cat">${escapeHtml(hit.category_label)}</span>`
       : "";
     const count = hit.appointment_count || 0;
     const detailId = `person-detail-${index}`;
+    const headlineBits = [title, department].filter((x) => !isBlankMeta(x));
+    const headline = headlineBits.length
+      ? `<p class="person-headline">${headlineBits.map((b) => escapeHtml(b)).join(" · ")}</p>`
+      : "";
+    const metaHtml = [
+      metaItem("任职单位", unit, "is-unit"),
+      metaItem("所属科室", department, "is-dept"),
+      metaItem("现任职务", title, "is-title"),
+      metaItem("分管科室", supervised, "is-supervised"),
+      metaItem("地区", region, "is-region"),
+    ]
+      .filter(Boolean)
+      .join("");
     return `
       <article class="person-card" role="listitem">
         <div class="person-card-head">
           <div class="person-card-title">
             <h3 class="person-name">
-              <a href="/people/${encodeURIComponent(hit.id)}">${escapeHtml(hit.name)}</a>
+              <a href="${personProfileHref(hit.id)}">${escapeHtml(hit.name)}</a>
             </h3>
             <div class="person-tags">${currentTag}${levelTag}${catTag}</div>
+            ${headline}
           </div>
           <button
             class="person-expand"
@@ -234,38 +271,16 @@
             aria-controls="${detailId}"
             data-target="${detailId}"
             data-count="${escapeHtml(count)}"
-          >任职记录 ${escapeHtml(count)} 条</button>
+          ><span class="expand-full">任职记录 ${escapeHtml(count)} 条</span><span class="expand-short" aria-hidden="true">${escapeHtml(count)} 条</span></button>
         </div>
-        <div class="person-meta-row">
-          <div class="person-meta-item">
-            <span class="meta-k">任职单位</span>
-            <span class="meta-v">${escapeHtml(hit.unit_display || "—")}</span>
-          </div>
-          <div class="person-meta-item">
-            <span class="meta-k">所属科室</span>
-            <span class="meta-v">${escapeHtml(
-              current.department ||
-                (hit.org_level === "headquarters" ? "本机关" : "—")
-            )}</span>
-          </div>
-          <div class="person-meta-item">
-            <span class="meta-k">现任职务</span>
-            <span class="meta-v">${escapeHtml(hit.title_display || current.title || "—")}</span>
-          </div>
-          <div class="person-meta-item">
-            <span class="meta-k">分管科室</span>
-            <span class="meta-v">${escapeHtml(
-              (hit.supervised_departments || current.departments || []).join("、") || "—"
-            )}</span>
-          </div>
-          <div class="person-meta-item">
-            <span class="meta-k">地区</span>
-            <span class="meta-v">${escapeHtml(hit.region_display || "—")}</span>
-          </div>
-        </div>
+        ${
+          metaHtml
+            ? `<div class="person-meta-row">${metaHtml}</div>`
+            : ""
+        }
         <div class="person-detail" id="${detailId}" hidden>
           ${renderAppointmentRows(hit.appointments || [])}
-          <p><a href="/people/${encodeURIComponent(hit.id)}">查看完整履历 →</a></p>
+          <p><a href="${personProfileHref(hit.id)}">查看完整履历 →</a></p>
         </div>
       </article>
     `;
@@ -278,14 +293,22 @@
     return `<ul class="appointment-mini">
       ${appointments
         .map((ev) => {
-          const source = ev.source_url
-            ? `<a href="${escapeHtml(ev.source_url)}" target="_blank" rel="noopener">公告原文</a>`
-            : "";
+          const source = ev.source_url ? noticeSourceLinks(ev.source_url) : "";
+          const place = (() => {
+            const code = String(ev.bureau_code || "").trim();
+            if (!code || code === "sta") return "";
+            const site = allBureaus.find((b) => b.code === code);
+            if (site) return bureauDisplayName(site, allBureaus);
+            if (ev.bureau_name) {
+              return shortBureauName({ name: ev.bureau_name, code, level: "" }, allBureaus);
+            }
+            return "";
+          })();
           const bits = [
             changeLabel(ev.action),
             ev.title_raw,
             ev.department_raw,
-            ev.bureau_code && ev.bureau_code !== "sta" ? ev.bureau_code : null,
+            place,
           ].filter((x) => {
             const s = String(x || "").trim();
             return s && s !== "—" && s !== "-" && s !== "–" && s !== "一";
@@ -306,9 +329,14 @@
         const panel = qs(`#${btn.dataset.target}`);
         const open = btn.getAttribute("aria-expanded") === "true";
         const count = btn.dataset.count || "0";
-        btn.setAttribute("aria-expanded", open ? "false" : "true");
-        panel.hidden = open;
-        btn.textContent = open ? `任职记录 ${count} 条` : "收起";
+        const nextOpen = !open;
+        btn.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+        panel.hidden = !nextOpen;
+        if (nextOpen) {
+          btn.textContent = "收起";
+        } else {
+          btn.innerHTML = `<span class="expand-full">任职记录 ${escapeHtml(count)} 条</span><span class="expand-short" aria-hidden="true">${escapeHtml(count)} 条</span>`;
+        }
       });
     });
   }
@@ -472,6 +500,17 @@
       searchTotal = data.total ?? 0;
       const currentCount = Number(data.current_count ?? 0);
       const pageNum = Math.floor((data.offset ?? 0) / PAGE_SIZE) + 1;
+      writeListQuery({
+        org_level: params.org_level,
+        unit_category: params.unit_category,
+        bureau_code: params.bureau_code || params.unit,
+        department: params.department,
+        title: titleSelect.value,
+        name: params.name,
+        date_from: params.date_from,
+        date_to: params.date_to,
+        page: page > 1 ? String(page) : "",
+      });
       meta.textContent = `共检索到 ${searchTotal} 位人员（第 ${pageNum} 页，本页 ${lastHits.length} 条）`;
       renderHits(lastHits);
       renderPagination(searchTotal, data.offset ?? 0);
@@ -504,7 +543,12 @@
     lastHits = [];
     searchTotal = 0;
     currentPage = 1;
-    onRegionFiltersChange().catch(() => {});
+    onRegionFiltersChange()
+      .then(() => {
+        refreshSearchWatchBar().catch(() => {});
+        clearListQuery();
+      })
+      .catch(() => {});
     results.innerHTML =
       '<div class="results-empty" id="results-empty">全部留空 = 列出库内所有人员（分页）；也可先选地区/科室/职务/姓名缩小范围</div>';
     meta.textContent = "点击「查询」浏览人员，默认每页 50 条";
@@ -513,10 +557,18 @@
   }
 
   function exportSearch(fmt) {
+    const total = Number(searchTotal) || 0;
+    if (total > 5000) {
+      const ok = window.confirm(
+        `当前筛选约 ${total.toLocaleString()} 人，将导出全部匹配结果（一人可多行任职记录），可能需要一两分钟。是否继续？`
+      );
+      if (!ok) return;
+    }
     const params = new URLSearchParams();
-    const map = { ...searchParams(), fmt, limit: 500 };
+    const map = { ...searchParams(), fmt, limit: 0 };
     Object.entries(map).forEach(([k, v]) => {
-      if (String(v || "").trim()) params.set(k, v);
+      // limit=0 means “all”; do not drop falsy 0
+      if (v === 0 || v === false || String(v ?? "").trim()) params.set(k, String(v));
     });
     window.location.href = `/api/export/search?${params.toString()}`;
   }
@@ -527,7 +579,7 @@
   qs("#export-xlsx-btn")?.addEventListener("click", () => exportSearch("xlsx"));
   levelSelect.addEventListener("change", () => {
     onRegionFiltersChange()
-      .then(refreshSearchWatchBar)
+      .then(() => refreshSearchWatchBar())
       .catch(() => {});
   });
   categorySelect.addEventListener("change", () => {
@@ -541,19 +593,43 @@
     refreshSearchWatchBar().catch(() => {});
   });
 
-  const boot = new URLSearchParams(window.location.search);
-  ["name", "department", "title", "org_level", "bureau_code", "date_from", "date_to"].forEach((key) => {
-    if (boot.get(key) && qs(`#${key}`)) qs(`#${key}`).value = boot.get(key);
-  });
+  const boot = readListRestore("/");
 
   Promise.all([loadLevels(), loadBureaus(), loadStaUnits()])
-    .then(refreshFilterOptions)
-    .then(() => {
+    .then(async () => {
+      if (boot.get("org_level")) setSelectValue(levelSelect, boot.get("org_level"));
+      await onRegionFiltersChange();
+      if (boot.get("unit_category") || boot.get("region_category")) {
+        setSelectValue(
+          categorySelect,
+          boot.get("unit_category") || boot.get("region_category")
+        );
+        rebuildBureauOptions();
+      }
+      if (boot.get("bureau_code")) setSelectValue(bureauSelect, boot.get("bureau_code"));
+      await refreshFilterOptions();
+      if (boot.get("department")) setSelectValue(deptSelect, boot.get("department"));
+      if (boot.get("title")) setSelectValue(titleSelect, boot.get("title"));
+      if (boot.get("name") && nameInput) nameInput.value = boot.get("name");
+      if (boot.get("date_from") && dateFromInput) dateFromInput.value = boot.get("date_from");
+      if (boot.get("date_to") && dateToInput) dateToInput.value = boot.get("date_to");
+      const page = Number.parseInt(boot.get("page") || "1", 10);
+      currentPage = Number.isFinite(page) && page > 1 ? page : 1;
       loadStats().catch(() => {});
       refreshSearchWatchBar().catch(() => {});
-      if (boot.get("name") || boot.get("department") || boot.get("title")) {
-        runSearch();
+      const shouldRun =
+        hasSearchCriteria(searchParams(currentPage)) ||
+        boot.has("page") ||
+        boot.get("name") ||
+        boot.get("department") ||
+        boot.get("title") ||
+        boot.get("bureau_code") ||
+        boot.get("org_level") ||
+        boot.get("unit_category");
+      if (shouldRun) {
+        return runSearch(null, currentPage);
       }
+      return null;
     })
     .catch((err) => {
       status.hidden = false;

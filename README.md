@@ -8,23 +8,25 @@
 
 | 模块 | 路由 | 说明 |
 | --- | --- | --- |
-| 人员检索 | `/` | 按姓名、职务、科室、地区筛选；支持分页、现任人数统计、Excel/CSV 导出 |
+| 人员检索 | `/` | 按姓名、职务、科室、地区筛选；分页与现任统计；Excel/CSV **全量导出**（每人最新一条任免） |
 | 最新公告 | `/notices` | 任免公告列表，按地区/时间/关键词筛选 |
+| 公告归档 | `/notices/view` | 单条公告正文与本条任免人员（地区更新可跳转「最新公告」） |
 | 变动流 | `/changes` | 任免事件时间线，可按科室、变动类型、关注项筛选 |
 | 科室穿透 | `/departments` | 科室 → 分管领导 → 任职人员；支持领导反查分管 |
 | 岗位历任 | `/posts` | 按科室/职务检索岗位，查看现任与历任档案 |
+| 地区更新 | `/regions` | 按层级列出各地区最近任免数据日期 |
 | 人员履历 | `/people/{id}` | 单人任职历史、领导简介链接 |
 | 账号与关注 | `/login`、`/account` | 邮箱或密码登录；关注在 `/account#watches`（`/watches` 会跳转过来） |
 | 数据异常 | `/anomalies` | 扫描与人工修正（需登录） |
 | 管理 | `/admin/users` | 邀请链接、对外访问地址配置（需管理员） |
 
-API 文档：启动服务后访问 `/docs`（OpenAPI）。
+检索页面向手机做了紧凑列表布局；桌面仍为多列卡片。API 文档：启动服务后访问 `/docs`（OpenAPI）。
 
 ## 技术栈
 
 - **语言**：Python 3.10+
 - **Web**：FastAPI + 静态 HTML/JS（无前端构建）
-- **存储**：SQLite（`output/tax_hr.db`）
+- **存储**：SQLite（默认 `output/tax_hr.db`，路径锚定项目根，可用环境变量覆盖）
 - **抓取**：`requests` + BeautifulSoup；部分站点需 Playwright/CDP 绕过 WAF
 - **导出**：`openpyxl`（Excel）
 
@@ -71,6 +73,11 @@ python scripts/run_api.py
 - 用户名：`admin`（环境变量 `TAX_HR_ADMIN_USER`）
 - 密码：`TaxHR-Admin-ChangeMe`（环境变量 `TAX_HR_ADMIN_PASSWORD`）
 
+### 阿里云部署
+
+上云（ECS + systemd + 可选 Nginx + Linux 定时抓取）见 **[docs/deploy-aliyun.md](docs/deploy-aliyun.md)**。  
+交给别人部署时先打交付包：`python scripts/pack_handoff.py`，说明见 **[docs/handoff-package.md](docs/handoff-package.md)**。
+
 ## 每周增量更新
 
 各站点默认 **7 天** 到期重爬一次（`tax_platform/config/schedule.py`，单站可设 `refresh_days`）。到期窗口记在 `output/crawl_state.json`；未到期的站会跳过，已入库的公告 URL 也会跳过。
@@ -98,6 +105,14 @@ python scripts/install_windows_crawl_task.py --remove              # 卸载
 ```
 
 需本机已有 `output/tax_hr.db`，且计划任务用的 Python 能 import 本仓库（建议用当前 venv 的解释器执行安装脚本）。
+
+### 云主机（Linux）：装 cron
+
+```bash
+python scripts/install_linux_crawl_cron.py --install
+```
+
+不要在云上使用 Windows 计划任务脚本。详见 [docs/deploy-aliyun.md](docs/deploy-aliyun.md) 第 12 步。
 
 ### 手动跑一次
 
@@ -238,8 +253,13 @@ python scripts/rediscover_list_urls.py   # 列表 URL 重发现（见 docs/crawl
 | `TAX_HR_ADMIN_USER` | 管理员用户名 | `admin` |
 | `TAX_HR_ADMIN_PASSWORD` | 管理员密码 | `TaxHR-Admin-ChangeMe` |
 | `TAX_HR_SECRET` | Session 签名密钥 | 开发用固定值（**生产必改**） |
-| `TAX_HR_PUBLIC_BASE` | 对外访问根 URL（邀请链接） | 自动推断；局域网部署建议设为 `http://192.168.x.x:8000` |
+| `TAX_HR_PUBLIC_BASE` | 对外访问根 URL（邀请链接） | 自动推断；局域网/公网部署请显式设置 |
+| `TAX_HR_DB` | 主库绝对路径 | `<项目根>/output/tax_hr.db` |
+| `TAX_HR_OUTPUT_DIR` | output 目录 | `<项目根>/output` |
+| `TAX_HR_CHROME` | 系统 Chrome/Chromium（CDP 回退） | 自动探测 |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | 邮件通知（可选） | 未配置则仅站内关注，不发信 |
+
+模板见仓库根目录 `env.example`。
 
 ## 站点规模
 
@@ -287,6 +307,8 @@ python scripts/local_pull_ingest.py
 | --- | --- |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 双平面架构、目录分层、公开页信息架构 |
 | [docs/TASK_BREAKDOWN.md](docs/TASK_BREAKDOWN.md) | 登录边界、已落地能力、上海采集约定 |
+| [docs/deploy-aliyun.md](docs/deploy-aliyun.md) | **阿里云 ECS 部署**：依赖、环境变量、systemd、Nginx |
+| [docs/handoff-package.md](docs/handoff-package.md) | **交给别人部署时额外要给的文件**（db / registry 等） |
 | [docs/cloud-crawl-sync.md](docs/cloud-crawl-sync.md) | 云爬本机入库 |
 | [docs/crawl-pitfalls-2026-09-01.md](docs/crawl-pitfalls-2026-09-01.md) | 抓取踩坑记录 |
 

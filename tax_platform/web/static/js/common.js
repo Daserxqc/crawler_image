@@ -57,6 +57,145 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
+/** Persist list filters into the address bar so browser Back restores them. */
+const LIST_STATE_PREFIX = "tax_hr_list_state:";
+
+function listStateKey(pathname = window.location.pathname) {
+  return LIST_STATE_PREFIX + (pathname || "/");
+}
+
+function writeListQuery(fields, { replace = true, persist = true } = {}) {
+  const url = new URL(window.location.href);
+  const clean = {};
+  Object.entries(fields || {}).forEach(([key, value]) => {
+    const text = String(value ?? "").trim();
+    if (text) clean[key] = text;
+  });
+  const next = new URLSearchParams(clean);
+  const qs = next.toString();
+  const target = qs ? `${url.pathname}?${qs}` : url.pathname;
+  const current = `${url.pathname}${url.search}`;
+  if (persist) {
+    try {
+      if (Object.keys(clean).length) {
+        sessionStorage.setItem(listStateKey(url.pathname), JSON.stringify(clean));
+      } else {
+        sessionStorage.removeItem(listStateKey(url.pathname));
+      }
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }
+  if (current === target) return;
+  // Always replace — never push filter URLs, or browser Back lands on an older search.
+  window.history.replaceState({}, "", target);
+}
+
+function clearListQuery() {
+  const url = new URL(window.location.href);
+  try {
+    sessionStorage.removeItem(listStateKey(url.pathname));
+  } catch {
+    /* ignore */
+  }
+  if (!url.search) return;
+  window.history.replaceState({}, "", url.pathname);
+}
+
+/** Read filters from the address bar only (no silent session hijack). */
+function readListRestore(pathname = window.location.pathname) {
+  return new URLSearchParams(window.location.search);
+}
+
+function setSelectValue(select, value) {
+  if (!select) return false;
+  const v = value == null ? "" : String(value);
+  if (!v) {
+    select.value = "";
+    return true;
+  }
+  if (![...select.options].some((opt) => opt.value === v)) {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    select.appendChild(opt);
+  }
+  select.value = v;
+  return select.value === v;
+}
+
+/** Person profile link that remembers the current list URL for「返回」. */
+function personProfileHref(personId, returnTo) {
+  const id = String(personId || "").trim();
+  if (!id) return "#";
+  const url = new URL(`/people/${encodeURIComponent(id)}`, window.location.origin);
+  const here = String(
+    returnTo || `${window.location.pathname}${window.location.search}` || ""
+  ).trim();
+  if (here && here.startsWith("/") && !here.startsWith("//") && !here.startsWith("/people")) {
+    url.searchParams.set("ret", here);
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+/**
+ * 「返回」只认人员页 URL 上的 ret，绝不读全局 session 以免跳到别的旧查询。
+ */
+function resolveListReturnUrl() {
+  const ret = new URLSearchParams(window.location.search).get("ret");
+  if (ret && ret.startsWith("/") && !ret.startsWith("//") && !ret.includes("://")) {
+    return ret;
+  }
+  return "";
+}
+
+/** Build list URL from filter fields (same rules as writeListQuery). */
+function listQueryHref(fields, pathname = window.location.pathname) {
+  const next = new URLSearchParams();
+  Object.entries(fields || {}).forEach(([key, value]) => {
+    const text = String(value ?? "").trim();
+    if (text) next.set(key, text);
+  });
+  const qs = next.toString();
+  return qs ? `${pathname}?${qs}` : pathname;
+}
+
+/**
+ * At click time, stamp ret=current list URL so「返回」不会用到渲染时的旧地址。
+ */
+function bindPersonReturnLinks(root = document) {
+  if (!root || root.__personReturnBound) return;
+  root.__personReturnBound = true;
+  root.addEventListener("click", (event) => {
+    const link = event.target?.closest?.("a[href^='/people/']");
+    if (!link) return;
+    try {
+      const url = new URL(link.getAttribute("href"), window.location.origin);
+      if (!url.pathname.startsWith("/people/")) return;
+      const here = `${window.location.pathname}${window.location.search}`;
+      if (!here || here.startsWith("/people")) return;
+      url.searchParams.set("ret", here);
+      link.href = `${url.pathname}${url.search}`;
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+/** Local notice archive link + optional live original URL. */
+function noticeSourceLinks(url, { archiveLabel = "本地存档", originalLabel = "原链接" } = {}) {
+  const href = String(url || "").trim();
+  if (!href) return "";
+  const archive = `/notices/view?url=${encodeURIComponent(href)}`;
+  return (
+    `<span class="notice-source-links">` +
+    `<a href="${escapeHtml(archive)}">${escapeHtml(archiveLabel)}</a>` +
+    `<span class="notice-source-sep" aria-hidden="true"> · </span>` +
+    `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(originalLabel)}</a>` +
+    `</span>`
+  );
+}
+
 function formatLocalDateTime(iso) {
   if (!iso) return "—";
   const date = new Date(iso);
@@ -142,6 +281,7 @@ const PAGE_TABS = [
   { id: "changes", href: "/changes", label: "变动流" },
   { id: "departments", href: "/departments", label: "科室穿透" },
   { id: "posts", href: "/posts", label: "岗位历任" },
+  { id: "regions", href: "/regions", label: "地区更新" },
 ];
 
 function levelLabel(id) {
@@ -353,7 +493,9 @@ function mountAppHeader(activeId, authState) {
   el.innerHTML = `
     <div class="app-header-inner">
       <a class="app-brand" href="/">税局人事检索</a>
-      <nav class="app-tabs" aria-label="功能导航">${tabs}</nav>
+      <nav class="app-tabs" aria-label="功能导航">
+        ${tabs}
+      </nav>
       <div class="app-auth" aria-label="账号">${authHtml}</div>
     </div>
   `;
@@ -673,6 +815,7 @@ document.addEventListener("DOMContentLoaded", () => {
   apiGet("/api/auth/me")
     .then((me) => mountAppHeader(page, me))
     .catch(() => mountAppHeader(page, { authenticated: false }));
+  bindPersonReturnLinks(document);
 });
 
 // Focus often stays on top filter <select>s; End/Home then change the option

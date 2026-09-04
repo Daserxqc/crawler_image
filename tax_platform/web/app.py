@@ -125,9 +125,21 @@ def ui_posts() -> FileResponse:
     return _html(STATIC_DIR / "posts.html")
 
 
+@app.get("/regions")
+def ui_regions() -> FileResponse:
+    """各地区按层级列出，并附最新任免数据日期。"""
+    return _html(STATIC_DIR / "regions.html")
+
+
 @app.get("/posts/view")
 def ui_posts_view() -> FileResponse:
     return _html(STATIC_DIR / "post_view.html")
+
+
+@app.get("/notices/view")
+def ui_notice_view() -> FileResponse:
+    """本地公告存档页（优先展示库内 raw_text，原文链接作备用）。"""
+    return _html(STATIC_DIR / "notice_view.html")
 
 
 @app.get("/people/{person_id:path}")
@@ -182,6 +194,8 @@ def meta_bureaus(
                 conn.commit()
         items = list_org_units(conn, level=level, parent_code=parent, region=region)
         if items:
+            codes = [u["code"] for u in items]
+            fresh = _latest_notice_dates(conn, codes)
             return {
                 "items": [
                     {
@@ -190,6 +204,7 @@ def meta_bureaus(
                         "region": u.get("region"),
                         "level": u["level"],
                         "parent_code": u.get("parent_code"),
+                        "latest_notice_on": fresh.get(u["code"]),
                     }
                     for u in items
                 ],
@@ -203,6 +218,11 @@ def meta_bureaus(
         sites = [s for s in sites if s.parent_code == parent]
     if region:
         sites = [s for s in sites if s.region == region]
+    conn = connect(_db_path(), light=True)
+    try:
+        fresh = _latest_notice_dates(conn, [s.code for s in sites])
+    finally:
+        conn.close()
     return {
         "items": [
             {
@@ -211,11 +231,60 @@ def meta_bureaus(
                 "region": s.region,
                 "level": s.level,
                 "parent_code": s.parent_code,
+                "latest_notice_on": fresh.get(s.code),
             }
             for s in sites
         ],
         "source": "config",
     }
+
+
+def _latest_notice_dates(
+    conn, codes: list[str]
+) -> dict[str, str]:
+    """Map bureau_code → latest data day.
+
+    Prefer notice issued/published date; fall back to max appointment
+    ``effective_on`` when notices exist but dates were not parsed.
+    """
+    if not codes:
+        return {}
+    out: dict[str, str] = {}
+    chunk = 400
+    for i in range(0, len(codes), chunk):
+        part = codes[i : i + chunk]
+        ph = ",".join("?" * len(part))
+        for row in conn.execute(
+            f"""
+            SELECT bureau_code,
+                   MAX(COALESCE(NULLIF(issued_on, ''), substr(published_at, 1, 10))) AS latest_on
+            FROM notices
+            WHERE bureau_code IN ({ph})
+            GROUP BY bureau_code
+            """,
+            part,
+        ):
+            day = (row["latest_on"] or "").strip()
+            if day:
+                out[row["bureau_code"]] = day[:10]
+        missing = [c for c in part if c not in out]
+        if not missing:
+            continue
+        mph = ",".join("?" * len(missing))
+        for row in conn.execute(
+            f"""
+            SELECT bureau_code, MAX(substr(effective_on, 1, 10)) AS latest_on
+            FROM appointment_events
+            WHERE bureau_code IN ({mph})
+              AND effective_on IS NOT NULL AND TRIM(effective_on) != ''
+            GROUP BY bureau_code
+            """,
+            missing,
+        ):
+            day = (row["latest_on"] or "").strip()
+            if day:
+                out[row["bureau_code"]] = day[:10]
+    return out
 
 
 @app.get("/api/meta/public-base")
@@ -476,10 +545,159 @@ def api_leader_departments(
 ) -> dict[str, Any]:
     conn = connect(_db_path())
     try:
-        items = departments_for_leader(name, bureau_code=bureau, conn=conn)
+        items = departments_for_leader(
+            name,
+            bureau_code=bureau,
+            include_tenure_fallback=True,
+            conn=conn,
+        )
     finally:
         conn.close()
-    return {"name": name, "items": items}
+    duty_n = sum(1 for it in items if it.get("source") == "leader_duties")
+    tenure_n = sum(1 for it in items if it.get("source") == "person_tenure")
+    return {
+        "name": name,
+        "items": items,
+        "leader_duty_count": duty_n,
+        "tenure_fallback_count": tenure_n,
+    }
+
+
+@app.get("/api/notices/by-url")
+def api_notice_by_url(
+    url: str = Query(..., min_length=4, description="公告 source_url"),
+) -> dict[str, Any]:
+    """按原文 URL 取库内公告正文（改版后原链接失效时的本地存档）。"""
+    from tax_platform.crawler.notice_url import notice_source_url_variants
+
+    raw = (url or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="url is required")
+    candidates = notice_source_url_variants(raw) or [raw]
+
+    conn = connect(_db_path(), light=True)
+    try:
+        row = None
+        for cand in candidates:
+            row = conn.execute(
+                """
+                SELECT id, bureau_code, title, source_url, published_at, doc_no,
+                       issuer, issued_on, raw_text
+                FROM notices WHERE source_url = ?
+                LIMIT 1
+                """,
+                (cand,),
+            ).fetchone()
+            if row:
+                break
+        if row is None:
+            raise HTTPException(status_code=404, detail="notice not found in local archive")
+        return _notice_archive_payload(row, conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/notices/latest")
+def api_notice_latest(
+    bureau_code: str = Query(..., min_length=1, description="单位 code"),
+) -> dict[str, Any]:
+    """该局最近一条任免公告（按发文日/发布日），供地区更新直达存档。"""
+    code = (bureau_code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="bureau_code is required")
+    conn = connect(_db_path(), light=True)
+    try:
+        row = conn.execute(
+            """
+            SELECT id, bureau_code, title, source_url, published_at, doc_no,
+                   issuer, issued_on, raw_text
+            FROM notices
+            WHERE bureau_code = ?
+            ORDER BY COALESCE(NULLIF(issued_on, ''), substr(published_at, 1, 10), '') DESC,
+                     id DESC
+            LIMIT 1
+            """,
+            (code,),
+        ).fetchone()
+        if row is None:
+            # Fallback: appointment event may carry a source_url when notice row missing.
+            ev = conn.execute(
+                """
+                SELECT source_url, MAX(substr(effective_on, 1, 10)) AS day
+                FROM appointment_events
+                WHERE bureau_code = ?
+                  AND source_url IS NOT NULL AND TRIM(source_url) != ''
+                GROUP BY source_url
+                ORDER BY day DESC
+                LIMIT 1
+                """,
+                (code,),
+            ).fetchone()
+            if ev and ev["source_url"]:
+                row = conn.execute(
+                    """
+                    SELECT id, bureau_code, title, source_url, published_at, doc_no,
+                           issuer, issued_on, raw_text
+                    FROM notices WHERE source_url = ?
+                    LIMIT 1
+                    """,
+                    (ev["source_url"],),
+                ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="no notice for this bureau")
+        return _notice_archive_payload(row, conn)
+    finally:
+        conn.close()
+
+
+def _notice_archive_payload(row, conn=None) -> dict[str, Any]:
+    from tax_platform.crawler.text_clean import display_notice_body, normalize_notice_title
+    from tax_platform.store.ingest import person_id
+
+    cleaned = display_notice_body(row["raw_text"])
+    events: list[dict[str, Any]] = []
+    if conn is not None:
+        notice_id = row["id"]
+        source_url = row["source_url"] or ""
+        for ev in conn.execute(
+            """
+            SELECT person_name, action, title_raw, department_raw,
+                   bureau_code, bureau_name, effective_on
+            FROM appointment_events
+            WHERE notice_id = ? OR (? != '' AND source_url = ?)
+            ORDER BY id
+            """,
+            (notice_id, source_url, source_url),
+        ):
+            code = (ev["bureau_code"] or row["bureau_code"] or "").strip()
+            name = (ev["person_name"] or "").strip()
+            if not name:
+                continue
+            events.append(
+                {
+                    "person_name": name,
+                    "person_id": person_id(code, name) if code else "",
+                    "action": ev["action"],
+                    "title_raw": ev["title_raw"],
+                    "department_raw": ev["department_raw"],
+                    "bureau_code": code,
+                    "bureau_name": ev["bureau_name"],
+                    "effective_on": ev["effective_on"],
+                }
+            )
+    return {
+        "id": row["id"],
+        "bureau_code": row["bureau_code"],
+        "title": normalize_notice_title(row["title"]) or row["title"],
+        "source_url": row["source_url"],
+        "published_at": row["published_at"],
+        "doc_no": row["doc_no"],
+        "issuer": row["issuer"],
+        "issued_on": row["issued_on"],
+        "raw_text": cleaned,
+        "has_text": bool(cleaned),
+        "events": events,
+    }
 
 
 @app.get("/api/people/{person_id:path}")
@@ -507,7 +725,7 @@ def api_export_search(
     unit_category: str | None = Query(None, description="internal|direct|dispatched|municipality|province|autonomous"),
     date_from: str | None = None,
     date_to: str | None = None,
-    limit: int = Query(200, ge=1, le=2000),
+    limit: int = Query(0, ge=0, le=100000, description="0 = export all matches"),
     fmt: Literal["csv", "xlsx"] = Query("csv"),
 ) -> Response:
     conn = connect(_db_path())

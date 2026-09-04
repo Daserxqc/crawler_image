@@ -33,6 +33,58 @@ def short_bureau_name(name: str | None, *, parent_name: str | None = None) -> st
     return text or str(name or "—")
 
 
+def sanitize_posting_unit(raw: str | None) -> str:
+    """Keep only the tax-bureau identity from a noisy ``bureau_name`` / unit string.
+
+    Parser debris often concatenates 科室+职务+免去… into bureau_name; UI must not
+    show that as 任职单位.
+    """
+    text = re.sub(r"\s+", "", str(raw or "").strip())
+    if not text:
+        return ""
+    text = re.split(r"(?:，|,|；|;|。)?(?:同时)?免去", text, maxsplit=1)[0]
+    text = re.sub(r"[（(]\s*[）)]", "", text)
+    text = text.strip("，,；;、 ")
+    if not text:
+        return ""
+
+    from tax_platform.crawler.appointment_clauses import split_post
+
+    bureau, _dept, _title = split_post(text)
+    if bureau and re.search(r"(税务局|税务分局|稽查局)", bureau):
+        return bureau
+
+    m = re.search(r"^(.+?(?:税务分局|稽查局|税务局))", text)
+    if m:
+        return m.group(1)
+
+    # Looks like title/dept mash without a bureau token — not a unit.
+    if re.search(
+        r"(副?局长|副?科长|副?处长|主任|主办|调研员|巡视员|职级)",
+        text,
+    ) and not re.search(r"(税务局|税务分局|稽查局)", text):
+        return ""
+    if len(text) > 40:
+        return ""
+    return text
+
+
+def sanitize_department_label(raw: str | None) -> str:
+    """Strip rank / 职级 debris glued onto department names."""
+    text = re.sub(r"\s+", "", str(raw or "").strip())
+    if not text:
+        return ""
+    text = re.split(r"(?:，|,|；|;|。)?(?:同时)?免去", text, maxsplit=1)[0]
+    text = re.sub(r"[（(]\s*[）)]", "", text)
+    text = re.sub(
+        r"(?:、)?(?:[一二三四五六七八九十百]+级)?(?:高级)?主办(?:职级)?$",
+        "",
+        text,
+    )
+    text = re.sub(r"职级$", "", text)
+    return text.strip("，,；;、 ") or ""
+
+
 def format_title_display(title_raw: str | None = None, title_canonical: str | None = None) -> str:
     raw = title_raw or title_canonical or ""
     nt = normalize_title(raw)
@@ -85,6 +137,9 @@ def infer_org_level_from_unit(unit: str | None) -> str | None:
         return None
     if text == "国家税务总局" or _unit_is_sta_headquarters(text):
         return "headquarters"
+    # 分局/税务所/稽查局：优先于文中嵌套的「××市税务局」片段
+    if "税务分局" in text or "稽查局" in text or re.search(r"税务所(?:$|（|\()", text):
+        return "district"
     if re.search(r"(省|自治区).{0,12}税务局", text) or "内蒙古自治区税务局" in text:
         return "province"
     if re.search(r"(市|自治州|州|盟).{0,12}税务局", text):
@@ -95,6 +150,91 @@ def infer_org_level_from_unit(unit: str | None) -> str | None:
     if text.startswith("国家税务总局") and "税务局" in text:
         return "city"
     return None
+
+
+def _primary_bureau_phrase(unit: str) -> str:
+    """First 税务局/分局/稽查局 segment (ignore later 免去… clauses)."""
+    text = (unit or "").strip()
+    if not text:
+        return ""
+    # Cut at common clause separators before matching.
+    head = re.split(r"[，,；;。]|免去|同时免去", text, maxsplit=1)[0]
+    m = re.search(
+        r"(?:国家税务总局)?[\u4e00-\u9fa5A-Za-z0-9（）()]{2,40}?(?:税务分局|稽查局|税务局)",
+        head,
+    )
+    return (m.group(0) if m else head).strip()
+
+
+def posting_belongs_to_bureau(bureau_code: str, current: dict | None = None) -> bool:
+    """True when任职单位 is 本级 of ``bureau_code``, not a subordinate other bureau.
+
+    City notices often appoint county/分局 chiefs while ``persons.bureau_code`` stays
+    the city. Selecting 保山市 should not list 腾冲市 / 隆阳区 / 施甸县 as 本级.
+    City-owned 第N税务分局 under the city bureau name still count as 本级.
+    """
+    code = (bureau_code or "").strip()
+    if not code:
+        return True
+    try:
+        site = get_site(code)
+    except KeyError:
+        return True
+    if site.level not in {"city", "district"}:
+        return True
+
+    current = current or {}
+    unit = str(current.get("unit") or "").strip()
+    if not unit:
+        return True
+
+    site_name = (site.name or "").strip()
+    short = short_bureau_name(site_name)
+    primary = _primary_bureau_phrase(unit) or unit
+
+    if site_name and site_name in primary:
+        return True
+
+    if short and len(short) >= 2 and short in primary:
+        rest = primary
+        for prefix in ("国家税务总局", short):
+            if prefix and prefix in rest:
+                rest = rest.replace(prefix, "", 1)
+        rest = rest.strip(" （()）")
+        # 保山市 + 隆阳区税务局 → subordinate district bureau
+        if re.match(r".{0,12}?(区|县|旗).{0,12}?税务", rest):
+            return False
+        # 保山市 + 第一税务分局 / 稽查局 / empty → 本级
+        if (
+            not rest
+            or rest.startswith("第")
+            or "税务分局" in rest
+            or "稽查局" in rest
+            or re.search(r"(科|处|室|所|中心)$", rest)
+        ):
+            return True
+        if re.search(r"(税务局|税务分局|稽查局)", rest):
+            return False
+        return True
+
+    matched = _match_site_from_unit(primary)
+    if matched is not None:
+        return matched.code == code
+
+    if re.search(r"(税务局|税务分局|稽查局)", primary):
+        return False
+    return True
+
+
+def bureau_needs_posting_scope(bureau_code: str | None) -> bool:
+    """City/district concrete picks should scope hits to 本级 postings."""
+    code = (bureau_code or "").strip()
+    if not code:
+        return False
+    try:
+        return get_site(code).level in {"city", "district"}
+    except KeyError:
+        return False
 
 
 def _match_site_from_unit(unit: str):
@@ -232,13 +372,16 @@ def bureau_codes_for_category(
 
 def unit_display(bureau_code: str, current: dict | None = None) -> str:
     current = current or {}
-    unit = current.get("unit")
+    unit = sanitize_posting_unit(current.get("unit"))
     if unit:
-        return short_bureau_name(str(unit))
+        return short_bureau_name(unit)
     site = resolve_posting_site(bureau_code, current)
     if site is not None:
         return short_bureau_name(site.name)
-    return bureau_code
+    try:
+        return short_bureau_name(get_site(bureau_code).name)
+    except KeyError:
+        return bureau_code or "—"
 
 
 def region_display(bureau_code: str, current: dict | None = None) -> str:
@@ -298,7 +441,16 @@ def headquarters_org_bucket(hit: dict) -> int:
 
 
 def enrich_hit_display(hit: dict) -> dict:
-    current = hit.get("current") or {}
+    current = dict(hit.get("current") or {})
+    cleaned_unit = sanitize_posting_unit(current.get("unit"))
+    cleaned_dept = sanitize_department_label(current.get("department"))
+    if cleaned_unit != (current.get("unit") or "") or cleaned_dept != (
+        current.get("department") or ""
+    ):
+        current["unit"] = cleaned_unit or None
+        if cleaned_dept:
+            current["department"] = cleaned_dept
+        hit["current"] = current
     title_raw = _pick_title_raw(hit)
     level, posting_code = _posting_org_level(hit.get("bureau_code") or "", current)
     hit["title_display"] = format_title_display(title_raw, current.get("title"))

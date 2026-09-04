@@ -1,0 +1,70 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>地区更新 · 税局人事检索</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css?v=55" />
+</head>
+<body class="app" data-page="regions">
+  <header class="app-header" id="app-header"></header>
+  <main class="app-main">
+    <div class="shell">
+      <section class="panel-card" aria-labelledby="regions-heading">
+        <h1 class="panel-heading" id="regions-heading">各地区最新更新</h1>
+        <p class="muted panel-lead">按总局 → 省 → 市 → 区县层级列出全部地区，并显示该局最近任免数据日期。</p>
+        <form class="filter-grid regions-filter" id="regions-form" autocomplete="off">
+          <div class="field">
+            <label for="org_level">地区层级</label>
+            <select id="org_level" name="org_level">
+              <option value="">全部层级</option>
+              <option value="headquarters">总局</option>
+              <option value="province">省局</option>
+              <option value="city">市局</option>
+              <option value="district">区县局</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="q">地区名称</label>
+            <input id="q" name="q" type="search" placeholder="如：保山、云南" />
+          </div>
+          <div class="field">
+            <label for="sort">排序</label>
+            <select id="sort" name="sort">
+              <option value="tree">按层级树</option>
+              <option value="date_desc">最新日期优先</option>
+              <option value="date_asc">最早日期优先</option>
+              <option value="name">按名称</option>
+            </select>
+          </div>
+          <div class="filter-actions">
+            <button class="btn" type="submit">筛选</button>
+            <button class="btn secondary" type="button" id="reset-btn">重置</button>
+          </div>
+        </form>
+      </section>
+
+      <div class="results-summary" id="regions-meta">加载中…</div>
+      <div class="panel-card regions-table-wrap" id="regions-panel">
+        <table class="data-table regions-table" id="regions-table" aria-label="各地区最新更新">
+          <thead>
+            <tr>
+              <th scope="col">地区</th>
+              <th scope="col">层级</th>
+              <th scope="col">最新更新</th>
+              <th scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody id="regions-body"></tbody>
+        </table>
+      </div>
+      <div class="status" id="regions-status" hidden></div>
+    </div>
+  </main>
+  <script src="/static/js/common.js?v=26"></script>
+  <script src="/static/js/regions.js?v=7"></script>
+</body>
+</html>

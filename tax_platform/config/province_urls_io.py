@@ -5,8 +5,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+from tax_platform.paths import under_output
+
 SITES_FILE = Path(__file__).resolve().parent / "sites_provinces.py"
-DEFAULT_REGISTRY = Path("output/province_urls.json")
+DEFAULT_REGISTRY = under_output("province_urls.json")
 
 
 def load_discovery_registry(path: Path = DEFAULT_REGISTRY) -> list[dict[str, Any]]:

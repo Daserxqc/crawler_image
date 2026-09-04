@@ -184,6 +184,28 @@ class AppointmentClauseTests(unittest.TestCase):
         self.assertEqual([e.person_name for e in events], ["陈双格", "赵伟"])
         self.assertNotIn("命陈双格", [e.person_name for e in events])
 
+    def test_appoint_tongzhi_keeps_full_name(self) -> None:
+        """「任命周立渊同志为…」不得把姓剥成「立渊」。"""
+        from tax_platform.models.entities import NoticeMeta
+
+        notice = NoticeMeta(
+            bureau_code="liaoning_col320",
+            title="任免",
+            source_url="http://anshan.example/n.html",
+            raw_text=(
+                "任命周立渊同志为国家税务总局鞍山市税务局第二稽查局局长，"
+                "免去其国家税务总局鞍山市税务局法制科科长职务"
+            ),
+        )
+        events = extract_appointment_events(notice)
+        names = [e.person_name for e in events]
+        self.assertIn("周立渊", names)
+        self.assertNotIn("立渊", names)
+        appoint = next(e for e in events if e.action == "appoint")
+        self.assertEqual(appoint.person_name, "周立渊")
+        self.assertEqual(appoint.title_raw, "局长")
+        self.assertEqual(appoint.department_raw, "第二稽查局")
+
     def test_jiangsu_property_tax_appoint_re(self) -> None:
         from tax_platform.models.entities import NoticeMeta
 

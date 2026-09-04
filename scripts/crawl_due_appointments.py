@@ -4,9 +4,13 @@
 Uses existing crawl_state cadence (default **7 days for all bureau levels**).
 Skips notice URLs already in the DB (incremental).
 
-Install a Windows daily checker (recommended — no need to run this by hand)::
+Windows daily checker::
 
     python scripts/install_windows_crawl_task.py
+
+Linux / Aliyun ECS daily checker (recommended on cloud)::
+
+    python scripts/install_linux_crawl_cron.py --install
 
 Manual run::
 
@@ -31,6 +35,7 @@ if str(ROOT) not in sys.path:
 
 from tax_platform.crawler.appointment_job import appointments_payload, crawl_appointments
 from tax_platform.crawler.job_io import dump_json
+from tax_platform.paths import ensure_project_cwd, resolve_data_path
 from tax_platform.store.ingest import ingest_appointment_results, known_notice_urls
 from tax_platform.store.schema import connect
 
@@ -85,8 +90,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    ensure_project_cwd()
     args = parse_args()
-    db_path = Path(args.db)
+    db_path = resolve_data_path(args.db, default_name="tax_hr.db")
 
     known: set[str] | None = None
     incremental = not args.full

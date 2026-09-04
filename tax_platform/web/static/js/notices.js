@@ -201,9 +201,7 @@
         items
           .map((item) => {
             const date = item.sort_date || item.issued_on || (item.published_at || "").slice(0, 10) || "—";
-            const source = item.source_url
-              ? `<a href="${escapeHtml(item.source_url)}" target="_blank" rel="noopener">原文</a>`
-              : "";
+            const source = item.source_url ? noticeSourceLinks(item.source_url) : "";
             const place = placeLabel(item);
             const docNo = cleanDocNo(item.doc_no);
             return `
@@ -219,7 +217,12 @@
               </div>
             </div>`;
           })
-          .join("") || `<div class="results-empty">该时间范围内暂无公告，可扩大时间范围或换地区再试。</div>`;
+          .join("") ||
+        `<div class="results-empty">${
+          dateFromForRange()
+            ? "该时间范围内暂无公告。若地区更新页有更早日期，请把「时间范围」改为「全部时间」或更长时间后再查。"
+            : "该地区暂无入库公告。"
+        }</div>`;
 
       mountSimplePager(qs("#notices-pager"), {
         total,
@@ -230,6 +233,14 @@
           offset = nextOffset;
           load().catch(() => {});
         },
+      });
+      writeListQuery({
+        date_range: rangeSelect.value,
+        org_level: levelSelect.value,
+        unit_category: categorySelect.value,
+        bureau_code: bureauSelect.value,
+        q: qInput.value,
+        offset: offset > 0 ? String(offset) : "",
       });
     } catch (err) {
       rows.innerHTML = "";
@@ -248,6 +259,7 @@
     rebuildCategoryOptions();
     rebuildBureauOptions();
     offset = 0;
+    clearListQuery();
     load().catch(() => {});
   }
 
@@ -267,7 +279,9 @@
     rebuildCategoryOptions();
     rebuildBureauOptions();
   });
-  categorySelect.addEventListener("change", rebuildBureauOptions);
+  categorySelect.addEventListener("change", () => {
+    rebuildBureauOptions();
+  });
   rangeSelect.addEventListener("change", () => {
     offset = 0;
     load().catch(() => {});
@@ -283,8 +297,28 @@
     }),
   ])
     .then(() => {
+      const boot = readListRestore("/notices");
+      const bootBureau = boot.get("bureau_code");
+      if (boot.has("date_range")) {
+        const bootRange = boot.get("date_range");
+        if ([...rangeSelect.options].some((o) => o.value === bootRange)) {
+          rangeSelect.value = bootRange;
+        }
+      } else if (bootBureau) {
+        rangeSelect.value = "";
+      }
+      if (boot.get("org_level")) setSelectValue(levelSelect, boot.get("org_level"));
+      else if (bootBureau) {
+        const site = allBureaus.find((b) => b.code === bootBureau);
+        if (site?.level) levelSelect.value = site.level;
+      }
       rebuildCategoryOptions();
+      if (boot.get("unit_category")) setSelectValue(categorySelect, boot.get("unit_category"));
       rebuildBureauOptions();
+      if (bootBureau) setSelectValue(bureauSelect, bootBureau);
+      if (boot.get("q")) qInput.value = boot.get("q");
+      const off = Number.parseInt(boot.get("offset") || "0", 10);
+      if (Number.isFinite(off) && off > 0) offset = off;
       return load();
     })
     .catch(showBootError);
